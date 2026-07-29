@@ -1,0 +1,22 @@
+# Build output
+**/bin/
+**/obj/
+
+# Runtime data (JSON snapshots + SQLite DB — these are local, not committed)
+**/data/
+*.db
+*.db-shm
+*.db-wal
+
+# User secrets
+steam_api_key.txt
+.env
+
+# IDE
+.vs/
+*.user
+.vscode/
+
+# OS
+Thumbs.db
+.DS_Store
