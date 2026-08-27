@@ -1,23 +1,33 @@
 # Steam Data Puller
 
-A C# CLI tool that fetches and stores game metrics from Steam APIs for a single game.
-Designed to capture the full lifecycle of a singleplayer game — from early access through maturity.
+A C# CLI tool that fetches and stores game metrics from Steam APIs.
+Designed to capture the full lifecycle of singleplayer games — from early access through maturity.
+
+![CI](https://github.com/Slumper1122/Steam-project/actions/workflows/ci.yml/badge.svg)
+![Collect](https://github.com/Slumper1122/Steam-project/actions/workflows/collect.yml/badge.svg)
 
 ## Features
 
 - **10 metrics** per snapshot: owners, CCU, reviews, playtime, price, updates, achievements, DLC
 - **JSON storage** — one timestamped file per pull under `data/<appid>/`
 - **SQLite database** — all snapshots persisted for querying over time
+- **Supabase cloud** — hourly snapshots pushed to PostgreSQL, accessible via dashboard or SQL
+- **Delta detection** — only stores a snapshot when something actually changed (saves space)
 - **Delta view** — compare any two consecutive snapshots metric by metric
 - **History table** — tabular view of all stored snapshots
+- **`collect` command** — unattended batch pull for all games in `watchlist.json`
+- **GitHub Actions** — hourly data collection + CI test gate on every PR
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    CLI (steamdata.exe)                   │
-│  pull <appid>  │  history <appid>  │  delta <appid>      │
-└───────────────────────┬─────────────────────────────────┘
+GitHub Actions (cron: every hour)
+         │
+         ▼
+┌────────────────────────────────────────────────────────────┐
+│                     CLI (steamdata)                         │
+│  pull <appid> │ history │ delta │ collect (watchlist.json)  │
+└───────────────────────┬────────────────────────────────────┘
                         │
           ┌─────────────▼──────────────┐
           │       SnapshotBuilder       │
@@ -27,17 +37,18 @@ Designed to capture the full lifecycle of a singleplayer game — from early acc
     ┌────────▼─┐ ┌──▼───┐ ┌▼────┐ ┌▼──────────┐
     │ Steam    │ │Steam │ │Steam│ │ SteamSpy  │
     │ Store    │ │ Web  │ │ Rev │ │    API    │
-    │   API    │ │  API │ │ API │ │           │
+    │   API    │ │  API │ │ API │ │ (owners)  │
     └──────────┘ └──────┘ └─────┘ └───────────┘
                         │
           ┌─────────────▼──────────────┐
           │      GameSnapshot model     │
-          └──────┬──────────────┬───────┘
-                 │              │
-          ┌──────▼────┐  ┌──────▼────┐
-          │ JSON file │  │  SQLite   │
-          │  storage  │  │    DB     │
-          └───────────┘  └───────────┘
+          │    DeltaService (changed?)  │
+          └──────┬──────────┬───────────┘
+                 │          │
+          ┌──────▼────┐  ┌──▼────────────────┐
+          │ JSON file │  │  SQLite (local)    │
+          │  storage  │  │  Supabase (cloud)  │
+          └───────────┘  └────────────────────┘
 ```
 
 ## Requirements
@@ -192,19 +203,120 @@ Steam-project/
         │   ├── SnapshotBuilder.cs     ← orchestrates all API calls
         │   ├── DatabaseService.cs     ← SQLite (Dapper)
         │   └── JsonStorage.cs         ← JSON file I/O
-        └── Commands/
-            ├── PullCommand.cs
-            ├── HistoryCommand.cs
-            └── DeltaCommand.cs
+        ├── Commands/
+        │   ├── PullCommand.cs
+        │   ├── HistoryCommand.cs
+        │   ├── DeltaCommand.cs
+        │   └── CollectCommand.cs      ← batch pull for watchlist
+        ├── Clients/
+        │   ├── SteamApiClient.cs
+        │   ├── SteamSpyClient.cs
+        │   └── SupabaseClient.cs      ← REST push to Supabase
+        └── Services/
+            ├── SnapshotBuilder.cs
+            ├── DatabaseService.cs
+            ├── JsonStorage.cs
+            └── DeltaService.cs        ← skip unchanged snapshots
+    Steam.Tests/                       ← xUnit smoke tests (32 tests)
+watchlist.json                         ← list of App IDs to monitor
+supabase_schema.sql                    ← run once in Supabase SQL Editor
+.github/workflows/
+    ci.yml                             ← build + test + coverage on every PR
+    collect.yml                        ← hourly data collection
 ```
+
+---
+
+## CI / Automation setup
+
+### 1. Enable GitHub Actions
+
+Push to GitHub — Actions run automatically.
+
+| Workflow | Trigger | What it does |
+|----------|---------|--------------|
+| `ci.yml` | Every push / PR | Build → test → coverage check → block merge if < 60% |
+| `collect.yml` | Every hour (cron) | Pull Steam data → delta check → push to Supabase |
+
+### 2. Add GitHub Secrets
+
+Go to your repo → **Settings → Secrets and variables → Actions → New repository secret**:
+
+| Secret name | Value |
+|-------------|-------|
+| `STEAM_API_KEY` | Your Steam Web API key |
+| `SUPABASE_URL` | `https://<project-id>.supabase.co` |
+| `SUPABASE_KEY` | Your Supabase **anon** key |
+
+### 3. Set up Supabase (free, 500 MB)
+
+1. Create a free project at [supabase.com](https://supabase.com)
+2. Open **SQL Editor** and run `supabase_schema.sql` (included in this repo)
+3. Copy **Project URL** and **anon public key** from **Settings → API**
+4. Add them as GitHub Secrets (see above)
+
+### 4. Configure watchlist
+
+Edit `watchlist.json` to add the App IDs you want to monitor:
+```json
+{
+  "games": [264710, 427520, 892970]
+}
+```
+
+### 5. Run collect manually (local)
+
+```bash
+export STEAM_API_KEY=your_key
+export SUPABASE_URL=https://xxx.supabase.co
+export SUPABASE_KEY=your_anon_key
+
+dotnet run --project "Steam data puller/Steam data puller" -- collect
+```
+
+### 6. View data in Supabase
+
+Open your Supabase project → **Table Editor** or run SQL:
+```sql
+SELECT app_id, captured_at, current_players, total_reviews, price_usd
+FROM snapshots
+WHERE app_id = 264710
+ORDER BY captured_at DESC
+LIMIT 24;
+```
+
+---
+
+## Data accuracy notes
+
+| Metric | Accuracy | Source |
+|--------|----------|--------|
+| Current player count | ✅ 100% exact | Steam Web API (`GetNumberOfCurrentPlayers`) |
+| Review counts / score | ✅ 100% exact | Steam Store API |
+| Price / discount | ✅ 100% exact | Steam Store API |
+| Owner count | ⚠️ Estimate only | SteamSpy (Steam doesn't publish this publicly) |
+| Wishlist count | ❌ Not available | No public API — Steam only exposes this to developers |
+| Playtime | ⚠️ Limited | SteamSpy free tier often returns 0 |
+
+---
 
 ## Dependencies
 
-| Package | Version | Purpose |
-|---------|---------|---------|
-| `System.CommandLine` | 2.0.0-beta4 | CLI argument parsing |
-| `Microsoft.Data.Sqlite` | 10.0.10 | SQLite database driver |
-| `Dapper` | 2.1.79 | Lightweight SQL mapper |
+| Package | Purpose |
+|---------|---------|
+| `System.CommandLine` 2.0.0-beta4 | CLI argument parsing |
+| `Microsoft.Data.Sqlite` 10.0.11 | SQLite database driver |
+| `Dapper` 2.1.79 | Lightweight SQL mapper |
+
+### Test dependencies
+
+| Package | Purpose |
+|---------|---------|
+| `xUnit` | Test framework |
+| `coverlet.collector` | Code coverage collection |
+| `RichardSzalay.MockHttp` | HTTP mocking for unit tests |
+
+---
 
 ## API Keys
 

@@ -21,7 +21,7 @@ public static class JsonStorage
         var dir  = Path.Combine(outputDir, snap.AppId.ToString());
         Directory.CreateDirectory(dir);
 
-        var ts   = snap.CapturedAt.ToString("yyyy-MM-ddTHH-mm-ssZ");
+        var ts   = snap.CapturedAt.ToString("yyyy-MM-ddTHH-mm-ss-fffZ");
         var path = Path.Combine(dir, $"{snap.AppId}_{ts}.json");
 
         var json = JsonSerializer.Serialize(snap, Opts);

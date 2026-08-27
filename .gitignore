@@ -2,6 +2,9 @@
 **/bin/
 **/obj/
 
+# Test results & coverage (generated locally, not committed)
+**/TestResults/
+
 # Runtime data (JSON snapshots + SQLite DB — these are local, not committed)
 **/data/
 *.db

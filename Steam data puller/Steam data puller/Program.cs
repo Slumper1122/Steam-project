@@ -64,8 +64,29 @@ deltaCmd.SetHandler((context) =>
     context.ExitCode = DeltaCommand.Run(appId, db);
 });
 
+// ── collect (unattended, reads watchlist.json) ────────────────────────────────
+var collectCmd      = new Command("collect", "Pull data for every game in watchlist.json and push to Supabase");
+var watchlistOption = new Option<string>("--watchlist", () => "watchlist.json", "Path to watchlist JSON file");
+var sbUrlOption     = new Option<string?>("--supabase-url",  "Supabase project URL  (or set SUPABASE_URL env var)");
+var sbKeyOption     = new Option<string?>("--supabase-key",  "Supabase anon key     (or set SUPABASE_KEY env var)");
+collectCmd.AddOption(watchlistOption);
+collectCmd.AddOption(sbUrlOption);
+collectCmd.AddOption(sbKeyOption);
+collectCmd.SetHandler(async (context) =>
+{
+    var watchlist  = context.ParseResult.GetValueForOption(watchlistOption)!;
+    var key        = context.ParseResult.GetValueForOption(keyOption);
+    var sbUrl      = context.ParseResult.GetValueForOption(sbUrlOption);
+    var sbKey      = context.ParseResult.GetValueForOption(sbKeyOption);
+    var output     = context.ParseResult.GetValueForOption(outputOption)!;
+    var db         = context.ParseResult.GetValueForOption(dbOption)!;
+    context.ExitCode = await CollectCommand.RunAsync(watchlist, key, sbUrl, sbKey, output, db,
+        context.GetCancellationToken());
+});
+
 root.AddCommand(pullCmd);
 root.AddCommand(historyCmd);
 root.AddCommand(deltaCmd);
+root.AddCommand(collectCmd);
 
 return await root.InvokeAsync(args);
