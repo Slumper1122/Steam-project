@@ -2,9 +2,7 @@ name: Collect Steam Data (hourly)
 
 on:
   schedule:
-    # Every hour, on the hour (UTC)
     - cron: "0 * * * *"
-  # Allow manual trigger from the Actions tab
   workflow_dispatch:
 
 jobs:
@@ -13,30 +11,24 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # ── Checkout ──────────────────────────────────────────────────────────────
       - uses: actions/checkout@v4
 
-      # ── .NET ─────────────────────────────────────────────────────────────────
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
 
-      # ── NuGet cache ───────────────────────────────────────────────────────────
       - uses: actions/cache@v4
         with:
           path: ~/.nuget/packages
           key: nuget-${{ hashFiles('**/*.csproj') }}
           restore-keys: nuget-
 
-      # ── Restore & Build ───────────────────────────────────────────────────────
       - name: Restore & Build (Release)
         run: |
           dotnet restore "Steam data puller/Steam data puller.slnx"
           dotnet build   "Steam data puller/Steam data puller.slnx" \
             --no-restore --configuration Release
-        working-directory: SteamCucc
 
-      # ── Run collector ─────────────────────────────────────────────────────────
       - name: Collect data
         run: >
           dotnet run
@@ -45,20 +37,16 @@ jobs:
           -- collect
           --watchlist watchlist.json
           --output data
-        working-directory: SteamCucc
         env:
           STEAM_API_KEY:  ${{ secrets.STEAM_API_KEY }}
           SUPABASE_URL:   ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY:   ${{ secrets.SUPABASE_KEY }}
 
-      # ── Upload data as artifact (30-day retention) ────────────────────────────
-      # Useful if Supabase is not configured — artifacts can be downloaded from
-      # the Actions UI or via the GitHub API.
       - name: Upload local snapshots
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: snapshots-${{ github.run_id }}
-          path: SteamCucc/data/
+          path: data/
           retention-days: 30
           if-no-files-found: ignore

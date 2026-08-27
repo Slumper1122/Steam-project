@@ -16,32 +16,24 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # ── Checkout ──────────────────────────────────────────────────────────────
       - uses: actions/checkout@v4
 
-      # ── .NET ─────────────────────────────────────────────────────────────────
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
 
-      # ── NuGet cache ───────────────────────────────────────────────────────────
       - uses: actions/cache@v4
         with:
           path: ~/.nuget/packages
           key: nuget-${{ hashFiles('**/*.csproj') }}
           restore-keys: nuget-
 
-      # ── Restore ───────────────────────────────────────────────────────────────
       - name: Restore
         run: dotnet restore "Steam data puller/Steam data puller.slnx"
-        working-directory: SteamCucc
 
-      # ── Build ─────────────────────────────────────────────────────────────────
       - name: Build
         run: dotnet build "Steam data puller/Steam data puller.slnx" --no-restore --configuration Release
-        working-directory: SteamCucc
 
-      # ── Test + Coverage ───────────────────────────────────────────────────────
       - name: Test
         run: >
           dotnet test "Steam data puller/Steam data puller.slnx"
@@ -49,24 +41,20 @@ jobs:
           --collect:"XPlat Code Coverage"
           --results-directory TestResults
           --logger "trx;LogFileName=results.trx"
-        working-directory: SteamCucc
 
-      # ── Publish test results ──────────────────────────────────────────────────
       - name: Publish test results
         uses: EnricoMi/publish-unit-test-result-action@v2
         if: always()
         with:
-          files: SteamCucc/TestResults/**/*.trx
+          files: TestResults/**/*.trx
 
-      # ── Generate coverage report ──────────────────────────────────────────────
       - name: Generate coverage report
         uses: danielpalme/ReportGenerator-GitHub-Action@5
         with:
-          reports: SteamCucc/TestResults/**/coverage.cobertura.xml
+          reports: TestResults/**/coverage.cobertura.xml
           targetdir: coverage-report
           reporttypes: Html;TextSummary
 
-      # ── Upload HTML report as artifact ────────────────────────────────────────
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
         if: always()
@@ -75,7 +63,6 @@ jobs:
           path: coverage-report/
           retention-days: 14
 
-      # ── Enforce 60% branch coverage ───────────────────────────────────────────
       - name: Check branch coverage ≥ 60%
         run: |
           python3 -c "
@@ -92,7 +79,7 @@ jobs:
           val = float(m.group(1))
           print(f'Branch coverage: {val}%')
           if val < 60:
-              print(f'FAIL: required ≥ 60%, got {val}%')
+              print(f'FAIL: required >= 60%, got {val}%')
               sys.exit(1)
           print('OK')
           "
