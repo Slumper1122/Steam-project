@@ -69,17 +69,30 @@ jobs:
             --format 'Image size: {{.Size}} bytes ({{len .RootFS.Layers}} layers)'
           docker history steamdata:ci --human --format 'table {{.Size}}\t{{.CreatedBy}}'
 
-      # Fails the build on known HIGH/CRITICAL CVEs so a vulnerable image is
-      # never published.
+      # Scanning and gating are separate steps so the findings are always
+      # reported, even though a fixable CVE blocks publication.
       - name: Scan image (Trivy)
         uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: steamdata:ci
+          format: json
+          output: trivy.json
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "0"
+
+      - name: Convert scan to SARIF
+        uses: aquasecurity/trivy-action@v0.36.0
+        if: always()
+        env:
+          TRIVY_SKIP_DB_UPDATE: "true"
         with:
           image-ref: steamdata:ci
           format: sarif
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
-          exit-code: "1"
           ignore-unfixed: true
+          exit-code: "0"
 
       - name: Upload scan results
         uses: github/codeql-action/upload-sarif@v3
@@ -99,6 +112,43 @@ jobs:
 
       - name: Smoke test (--help must work)
         run: docker run --rm steamdata:ci --help
+
+      # Runs last so a CVE in the base image does not hide a broken container.
+      - name: Enforce vulnerability policy
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, sys
+
+          report   = json.loads(pathlib.Path('trivy.json').read_text())
+          findings = [
+              (v.get('Severity', '?'), result.get('Target', '?'), v['VulnerabilityID'],
+               v.get('PkgName', '?'), v.get('InstalledVersion', '?'), v.get('FixedVersion', '?'))
+              for result in report.get('Results') or []
+              for v in result.get('Vulnerabilities') or []
+          ]
+
+          rows = '\n'.join(
+              f'| {sev} | `{pkg}` | {installed} | {fixed} | {cve} |'
+              for sev, _, cve, pkg, installed, fixed in sorted(findings))
+
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              if not findings:
+                  summary.write('## Trivy\n\nNo fixable HIGH or CRITICAL vulnerabilities.\n')
+              else:
+                  summary.write(
+                      f'## Trivy — {len(findings)} fixable finding(s)\n\n'
+                      '| Severity | Package | Installed | Fixed in | CVE |\n'
+                      '|---|---|---|---|---|\n' + rows + '\n')
+
+          for sev, target, cve, pkg, installed, fixed in sorted(findings):
+              print(f'::error::{sev} {cve} in {pkg} {installed} '
+                    f'(fixed in {fixed}) — {target}')
+
+          if findings:
+              sys.exit(f'{len(findings)} fixable HIGH/CRITICAL vulnerabilities; not publishing')
+          print('No fixable HIGH or CRITICAL vulnerabilities.')
+          PY
 
       - name: Push image
         if: github.event_name != 'pull_request'
