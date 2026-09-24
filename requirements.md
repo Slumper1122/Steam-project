@@ -33,12 +33,21 @@ The `history` command displays a tabular summary of all stored snapshots for a g
 ### FR-6 — Singleplayer games only
 The tool is designed for singleplayer titles. Multiplayer CCU patterns and review dynamics differ fundamentally and are out of scope for v1.
 
+### FR-7 — Batch collection from a watchlist
+The `collect` command reads a list of App IDs from `watchlist.json` and pulls every one of them in a single unattended run. A failure on one game is logged and does not abort the remaining games.
+
+### FR-8 — Cloud persistence
+When `SUPABASE_URL` and `SUPABASE_KEY` are set, each stored snapshot is also written to a Supabase PostgreSQL database over its REST API. Without them the tool runs fully offline.
+
+### FR-9 — Self-scheduling
+`collect --interval <seconds>` (or `COLLECT_INTERVAL_SECONDS`) repeats the collection indefinitely instead of exiting, so a container needs no cron daemon. `SIGTERM` and `Ctrl+C` shut it down cleanly.
+
 ---
 
 ## Non-Functional Requirements
 
-### NFR-1 — No real-time polling
-v1 is a one-shot CLI tool. Scheduling is handled externally (e.g. Windows Task Scheduler, cron, GitHub Actions).
+### NFR-1 — Flexible scheduling
+The tool runs one-shot by default so an external scheduler (cron, systemd timer, GitHub Actions, Kubernetes CronJob) stays in control. An internal interval loop is available for environments without a scheduler.
 
 ### NFR-2 — Offline-first storage
 All fetched data is stored locally (JSON + SQLite) so it can be queried without an internet connection after the initial pull.
@@ -51,6 +60,18 @@ The project targets .NET 8.0 LTS for stability and long-term support.
 
 ### NFR-5 — No external services required
 Beyond the free public APIs listed in FR-2, no paid services, accounts, or external infrastructure are needed to run the tool.
+
+### NFR-6 — Test coverage gate
+Unit tests cover the API clients, snapshot assembly, both storage layers and the delta logic. CI fails below 60% branch coverage, blocking the merge.
+
+### NFR-7 — Containerized deployment
+The collector ships as a Linux container image built from a chiseled base, targeting roughly 87 MB. The build must not embed credentials, and the SDK must not appear in the final image.
+
+### NFR-8 — Container hardening
+The container runs as a non-root user (UID 1654) with a read-only root filesystem, all Linux capabilities dropped and `no-new-privileges` set. Only the `/data` volume is writable. Application files are owned by root and mounted read-only so the process cannot modify its own binaries.
+
+### NFR-9 — Restricted image distribution
+Images are published to a private GitHub Container Registry package. Pulling requires a fine-grained personal access token limited to `read:packages`. Every build is scanned with Trivy and publication fails on a fixable HIGH or CRITICAL vulnerability.
 
 ---
 
@@ -68,8 +89,10 @@ Beyond the free public APIs listed in FR-2, no paid services, accounts, or exter
 ## Out of Scope (v1)
 
 - Wishlist count (no public Steam API endpoint)
+- Exact owner count (Steam only exposes this to the game's own developer)
 - Price history (requires ITAD API key)
 - Multiplayer / competitive games
 - Real-time streaming or webhooks
 - Web UI or dashboard
 - Machine learning / prediction
+- Trimmed / Native AOT image builds (blocked by reflection in Dapper and `System.Text.Json`)

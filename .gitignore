@@ -14,6 +14,7 @@
 # User secrets
 steam_api_key.txt
 .env
+!.env.example
 
 # IDE
 .vs/

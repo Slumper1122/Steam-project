@@ -5,6 +5,7 @@ Designed to capture the full lifecycle of singleplayer games — from early acce
 
 ![CI](https://github.com/Slumper1122/Steam-project/actions/workflows/ci.yml/badge.svg)
 ![Collect](https://github.com/Slumper1122/Steam-project/actions/workflows/collect.yml/badge.svg)
+![Docker](https://github.com/Slumper1122/Steam-project/actions/workflows/docker.yml/badge.svg)
 
 ## Features
 
@@ -17,6 +18,7 @@ Designed to capture the full lifecycle of singleplayer games — from early acce
 - **History table** — tabular view of all stored snapshots
 - **`collect` command** — unattended batch pull for all games in `watchlist.json`
 - **GitHub Actions** — hourly data collection + CI test gate on every PR
+- **Containerized** — 87 MB hardened image: non-root, read-only filesystem, no shell
 
 ## Architecture
 
@@ -217,12 +219,17 @@ Steam-project/
             ├── DatabaseService.cs
             ├── JsonStorage.cs
             └── DeltaService.cs        ← skip unchanged snapshots
-    Steam.Tests/                       ← xUnit smoke tests (32 tests)
+    Steam.Tests/                       ← xUnit smoke tests (45 tests)
 watchlist.json                         ← list of App IDs to monitor
 supabase_schema.sql                    ← run once in Supabase SQL Editor
+Dockerfile                             ← multi-stage, chiseled, non-root
+docker-compose.yml                     ← hardened runtime (read-only, no caps)
+.dockerignore                          ← keeps secrets and build output out
+.env.example                           ← template for local secrets
 .github/workflows/
     ci.yml                             ← build + test + coverage on every PR
     collect.yml                        ← hourly data collection
+    docker.yml                         ← image build + Trivy scan + GHCR push
 ```
 
 ---
@@ -283,6 +290,168 @@ FROM snapshots
 WHERE app_id = 264710
 ORDER BY captured_at DESC
 LIMIT 24;
+```
+
+---
+
+## Container
+
+The collector ships as a Docker image. This is the recommended way to run it on
+a Linux host or VPS.
+
+### Quick start
+
+```bash
+cp .env.example .env        # then fill in STEAM_API_KEY (+ Supabase, optional)
+docker compose up -d
+docker compose logs -f
+```
+
+The container pulls once on start, then every hour. Scheduling happens inside
+the app (`--interval` / `COLLECT_INTERVAL_SECONDS`) rather than via cron, so the
+image needs no shell, no cron daemon and no init system.
+
+```bash
+docker compose down            # stop, keep data
+docker compose down -v         # stop and delete the data volume
+docker run --rm steamdata --help
+```
+
+### Where the data goes
+
+| Path | Contents | Writable |
+|------|----------|----------|
+| `/app` | Application binaries, `watchlist.json` | No — read-only, owned by root |
+| `/data/snapshots` | Timestamped JSON files | Yes — named volume |
+| `/data/steam_data.db` | SQLite database | Yes — named volume |
+
+With Supabase configured the container also pushes each snapshot to the cloud.
+Without it, the delta check falls back to the local SQLite database so an
+offline container still skips unchanged rows.
+
+To change which games are tracked, edit `watchlist.json` and rebuild, or mount
+your own over it:
+
+```bash
+docker run -v ./watchlist.json:/app/watchlist.json:ro ...
+```
+
+---
+
+### Image size
+
+Final image: **~87 MB** (~50 MB compressed on the registry), of which the
+application itself is 2.1 MB. Four things get it there:
+
+**1. Multi-stage build.** The .NET SDK needed to compile is ~800 MB. It lives in
+the `build` stage only; the final image copies the compiled output and nothing
+else.
+
+**2. Chiseled base image.** `runtime:8.0-noble-chiseled` is Ubuntu stripped down
+to what .NET needs — no shell, no package manager, no `apt`, no busybox:
+
+| Base image | Size | Notes |
+|------------|------|-------|
+| `sdk:8.0` | ~800 MB | Build only, never ship this |
+| `aspnet:8.0` | ~220 MB | Includes the web stack we don't use |
+| `runtime:8.0` | ~190 MB | Full Ubuntu userland |
+| `runtime:8.0-alpine` | ~85 MB | musl libc, needs `linux-musl-x64` |
+| **`runtime:8.0-noble-chiseled`** | **~85 MB** | ← in use: glibc, but no shell |
+
+**3. `InvariantGlobalization=true`.** Drops the ICU dependency (~30 MB) that the
+chiseled image does not ship anyway. The app only formats dates and numbers, so
+invariant culture is sufficient.
+
+**4. `SatelliteResourceLanguages=en`.** The NuGet dependencies ship translated
+exception messages in 13 languages. Removing them saves 240 KB.
+
+**How to go smaller.** Publishing self-contained + trimmed onto
+`runtime-deps:8.0-noble-chiseled` would land around 45–55 MB, and Native AOT
+around 25 MB. Neither is enabled here: Dapper and `System.Text.Json` both
+resolve properties by reflection, which the trimmer cannot see, so the build
+would succeed and then fail at runtime with an empty result set. Going down that
+path means switching to source-generated JSON contexts and adding an end-to-end
+test against a real database before trusting it.
+
+---
+
+### Security
+
+**Non-root by default.** The chiseled base defines UID 1654 and the Dockerfile
+ends with `USER 1654`. Application files are copied as `root:root` with mode
+`555`, so the running process can read and execute them but cannot modify them —
+a compromised process cannot patch its own binary. The only path it owns is
+`/data`.
+
+**Read-only root filesystem.** `docker-compose.yml` sets `read_only: true`, so
+every path except the `/data` volume and a 64 MB `noexec` tmpfs at `/tmp` is
+immutable. This is also why `PublishSingleFile` is disabled: a single-file build
+unpacks itself into a temp directory at startup and would fail here.
+
+**No privilege escalation.** `cap_drop: ALL` removes every Linux capability, and
+`no-new-privileges:true` blocks setuid binaries from raising privileges.
+
+```yaml
+read_only: true
+security_opt: [no-new-privileges:true]
+cap_drop: [ALL]
+tmpfs: [/tmp:rw,noexec,nosuid,size=64m]
+```
+
+Verify a running container:
+
+```bash
+docker compose exec collector id          # fails: no shell in the image
+docker inspect steam-collector --format '{{.Config.User}}'          # 1654
+docker inspect steam-collector --format '{{.HostConfig.ReadonlyRootfs}}'  # true
+```
+
+**Secrets are never baked into the image.** API keys arrive as environment
+variables from `.env`, which is gitignored and excluded by `.dockerignore`.
+Anyone who pulls the image gets the code, not the credentials.
+
+**Private registry access.** The image is published to GitHub Container Registry
+and the package is private, so a pull requires a token that you issue:
+
+```bash
+# On the machine that should run the collector
+echo $GHCR_TOKEN | docker login ghcr.io -u <your-github-username> --password-stdin
+docker pull ghcr.io/slumper1122/steam-project:latest
+```
+
+Create `GHCR_TOKEN` at **GitHub → Settings → Developer settings → Personal
+access tokens → Fine-grained**, scoped to this repository with only
+`read:packages`. A read-only token cannot overwrite your images even if the
+machine is compromised. Confirm the package is private at
+**github.com/Slumper1122?tab=packages → steam-project → Package settings**.
+
+**Vulnerability scanning.** `.github/workflows/docker.yml` runs Trivy on every
+build and fails on any fixable HIGH or CRITICAL CVE, so a vulnerable image never
+reaches the registry. Results are uploaded to the repository Security tab. The
+same workflow asserts the image is not configured to run as root.
+
+---
+
+### Scheduling options compared
+
+The container schedules itself, but that is one of several options:
+
+| Approach | Reliability | Cost | Notes |
+|----------|-------------|------|-------|
+| GitHub Actions `schedule:` | Poor | Free | Runs are delayed or dropped under load; observed 2–13 h gaps |
+| External cron → `workflow_dispatch` | Good | Free | e.g. cron-job.org calling the GitHub API; needs a PAT |
+| **Container `--interval` loop** | Good | VPS cost | ← in use: no external dependency, but drifts a few seconds per cycle |
+| Host `cron` → `docker run` | Very good | VPS cost | Exact wall-clock times; set `COLLECT_INTERVAL_SECONDS=0` |
+| systemd timer | Very good | VPS cost | Adds `Persistent=true` to catch up after downtime |
+| Kubernetes `CronJob` | Very good | Cluster cost | Overkill for two games |
+
+To hand scheduling to the host instead, disable the internal loop and run the
+container one-shot from crontab:
+
+```cron
+0 * * * * docker run --rm --env-file /opt/steam/.env \
+  -e COLLECT_INTERVAL_SECONDS=0 \
+  -v steam-data:/data ghcr.io/slumper1122/steam-project:latest
 ```
 
 ---

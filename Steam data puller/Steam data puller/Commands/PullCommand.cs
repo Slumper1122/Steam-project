@@ -6,12 +6,17 @@ namespace SteamPuller.Commands;
 
 public static class PullCommand
 {
+    /// <param name="httpHandler">
+    /// Overrides the transport, letting tests drive the command without network
+    /// access. Production passes null and gets the default handler.
+    /// </param>
     public static async Task<int> RunAsync(
         int     appId,
         string? apiKey,
         string  outputDir,
         string  dbPath,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        HttpMessageHandler? httpHandler = null)
     {
         var key = ResolveKey(apiKey);
         if (key is null)
@@ -24,7 +29,7 @@ public static class PullCommand
 
         Header($"Steam Data Puller — AppID {appId}");
 
-        using var http    = BuildHttpClient();
+        using var http    = HttpClientFactory.Create(httpHandler);
         var steam         = new SteamApiClient(http, key);
         var spy           = new SteamSpyClient(http);
         var builder       = new SnapshotBuilder(steam, spy);
@@ -117,14 +122,6 @@ public static class PullCommand
         if (!string.IsNullOrWhiteSpace(cliKey)) return cliKey;
         var env = Environment.GetEnvironmentVariable("STEAM_API_KEY");
         return string.IsNullOrWhiteSpace(env) ? null : env;
-    }
-
-    private static HttpClient BuildHttpClient()
-    {
-        var client = new HttpClient();
-        client.Timeout = TimeSpan.FromSeconds(30);
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("SteamDataPuller/1.0");
-        return client;
     }
 
     private static string FormatMinutes(int min)

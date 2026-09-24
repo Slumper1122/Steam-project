@@ -155,6 +155,51 @@ public sealed class DatabaseService(string dbPath)
             new { AppId = appId, Limit = limit });
     }
 
+    /// <summary>
+    /// Returns the delta-relevant fields of the newest local snapshot, or null if
+    /// the game has none yet. Used to skip unchanged snapshots when running
+    /// without Supabase (e.g. a self-contained container).
+    /// </summary>
+    public DeltaKey? GetLastDeltaKey(int appId)
+    {
+        using var conn = Open();
+        var row = conn.QueryFirstOrDefault<DeltaKeyRow>("""
+            SELECT
+                current_players AS CurrentPlayers,
+                total_reviews   AS TotalReviews,
+                owners_low      AS OwnersLow,
+                price_usd       AS PriceUsd,
+                discount_pct    AS DiscountPct
+            FROM snapshots
+            WHERE app_id = @AppId
+            ORDER BY captured_at DESC
+            LIMIT 1;
+            """,
+            new { AppId = appId });
+
+        return row is null
+            ? null
+            : new DeltaKey(
+                CurrentPlayers: (int)(row.CurrentPlayers ?? 0),
+                TotalReviews:   (int)(row.TotalReviews   ?? 0),
+                OwnersLow:      (int)(row.OwnersLow      ?? 0),
+                PriceUsd:       row.PriceUsd             ?? 0,
+                DiscountPct:    (int)(row.DiscountPct    ?? 0));
+    }
+
+    /// <summary>
+    /// SQLite stores every integer as a 64-bit value and any column may be NULL,
+    /// so Dapper cannot project straight onto <see cref="DeltaKey"/>.
+    /// </summary>
+    private sealed class DeltaKeyRow
+    {
+        public long?   CurrentPlayers { get; set; }
+        public long?   TotalReviews   { get; set; }
+        public long?   OwnersLow      { get; set; }
+        public double? PriceUsd       { get; set; }
+        public long?   DiscountPct    { get; set; }
+    }
+
     public (SnapshotRow? prev, SnapshotRow? curr) GetLastTwo(int appId)
     {
         var rows = GetHistory(appId, 2).ToList();

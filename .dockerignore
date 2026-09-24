@@ -1,0 +1,41 @@
+# Keeping the build context small speeds up `docker build` and prevents secrets
+# or local state from ever reaching an image layer.
+
+# Build output
+**/bin/
+**/obj/
+**/TestResults/
+coverage-report/
+
+# Tests are run by CI, not needed to produce the runtime image
+Steam data puller/Steam.Tests/
+
+# Local runtime state
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Secrets
+.env
+*.env
+steam_api_key.txt
+
+# VCS / CI / editor / docs
+.git/
+.github/
+.gitignore
+.vs/
+.vscode/
+*.user
+*.md
+LICENSE
+
+# Docker's own files
+Dockerfile*
+.dockerignore
+docker-compose*.yml
+
+# OS
+Thumbs.db
+.DS_Store

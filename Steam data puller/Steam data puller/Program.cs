@@ -69,9 +69,15 @@ var collectCmd      = new Command("collect", "Pull data for every game in watchl
 var watchlistOption = new Option<string>("--watchlist", () => "watchlist.json", "Path to watchlist JSON file");
 var sbUrlOption     = new Option<string?>("--supabase-url",  "Supabase project URL  (or set SUPABASE_URL env var)");
 var sbKeyOption     = new Option<string?>("--supabase-key",  "Supabase anon key     (or set SUPABASE_KEY env var)");
+var intervalOption  = new Option<int>(
+    "--interval",
+    () => int.TryParse(Environment.GetEnvironmentVariable("COLLECT_INTERVAL_SECONDS"), out var i) ? i : 0,
+    "Repeat every N seconds instead of exiting after one pass. " +
+    "0 = run once. Falls back to COLLECT_INTERVAL_SECONDS env var.");
 collectCmd.AddOption(watchlistOption);
 collectCmd.AddOption(sbUrlOption);
 collectCmd.AddOption(sbKeyOption);
+collectCmd.AddOption(intervalOption);
 collectCmd.SetHandler(async (context) =>
 {
     var watchlist  = context.ParseResult.GetValueForOption(watchlistOption)!;
@@ -80,7 +86,8 @@ collectCmd.SetHandler(async (context) =>
     var sbKey      = context.ParseResult.GetValueForOption(sbKeyOption);
     var output     = context.ParseResult.GetValueForOption(outputOption)!;
     var db         = context.ParseResult.GetValueForOption(dbOption)!;
-    context.ExitCode = await CollectCommand.RunAsync(watchlist, key, sbUrl, sbKey, output, db,
+    var interval   = context.ParseResult.GetValueForOption(intervalOption);
+    context.ExitCode = await CollectCommand.RunAsync(watchlist, key, sbUrl, sbKey, output, db, interval,
         context.GetCancellationToken());
 });
 

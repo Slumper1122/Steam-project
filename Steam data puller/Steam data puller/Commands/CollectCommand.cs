@@ -7,7 +7,8 @@ namespace SteamPuller.Commands;
 /// <summary>
 /// Reads watchlist.json, pulls data for every game,
 /// checks delta, and persists to Supabase if something changed.
-/// Designed to run unattended (GitHub Actions cron).
+/// Runs once by default; with a positive interval it loops forever,
+/// which is how it runs inside a container (no cron or shell needed).
 /// </summary>
 public static class CollectCommand
 {
@@ -18,7 +19,55 @@ public static class CollectCommand
         string? supabaseKey,
         string  outputDir,
         string  dbPath,
-        CancellationToken ct = default)
+        int     intervalSeconds = 0,
+        CancellationToken ct = default,
+        HttpMessageHandler? httpHandler = null)
+    {
+        if (intervalSeconds <= 0)
+            return await RunOnceAsync(watchlistPath, apiKey, supabaseUrl, supabaseKey, outputDir, dbPath, ct, httpHandler);
+
+        Info($"[SCHEDULE] Looping every {intervalSeconds}s. Send SIGTERM/Ctrl+C to stop.");
+
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                await RunOnceAsync(watchlistPath, apiKey, supabaseUrl, supabaseKey, outputDir, dbPath, ct, httpHandler);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                // A failed cycle must never kill a long-running container.
+                Err($"[CYCLE] Unhandled error: {ex.Message}");
+            }
+
+            Info($"\n[SCHEDULE] Next run in {intervalSeconds}s ({DateTime.UtcNow.AddSeconds(intervalSeconds):u}).");
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(intervalSeconds), ct);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+        }
+
+        Info("[SCHEDULE] Shutting down cleanly.");
+        return 0;
+    }
+
+    private static async Task<int> RunOnceAsync(
+        string  watchlistPath,
+        string? apiKey,
+        string? supabaseUrl,
+        string? supabaseKey,
+        string  outputDir,
+        string  dbPath,
+        CancellationToken ct,
+        HttpMessageHandler? httpHandler)
     {
         // ── Validate config ───────────────────────────────────────────────────
         var steamKey = ResolveEnv(apiKey, "STEAM_API_KEY");
@@ -57,7 +106,7 @@ public static class CollectCommand
         Info($"[COLLECT] Watchlist: {appIds.Length} game(s) — {string.Join(", ", appIds)}");
 
         // ── Setup services ────────────────────────────────────────────────────
-        using var http    = BuildHttpClient();
+        using var http    = HttpClientFactory.Create(httpHandler);
         var steam         = new SteamApiClient(http, steamKey);
         var spy           = new SteamSpyClient(http);
         var builder       = new SnapshotBuilder(steam, spy);
@@ -78,17 +127,24 @@ public static class CollectCommand
                 var snap = await builder.BuildAsync(appId, ct);
 
                 // ── Delta check ───────────────────────────────────────────────
-                System.Text.Json.Nodes.JsonObject? lastRemote = null;
+                // Supabase is the source of truth when configured, so a snapshot
+                // missing from the cloud is always uploaded. Without it we fall
+                // back to the local database so an offline container still skips
+                // unchanged rows.
+                DeltaKey? last;
                 if (supabase is not null)
                 {
+                    System.Text.Json.Nodes.JsonObject? lastRemote = null;
                     try { lastRemote = await supabase.GetLatestSnapshotAsync(appId, ct); }
                     catch (Exception ex) { Warn($"  [DELTA] Could not fetch last remote snapshot: {ex.Message}"); }
+                    last = DeltaService.FromSupabaseRow(lastRemote);
+                }
+                else
+                {
+                    last = db.GetLastDeltaKey(appId);
                 }
 
-                var lastLocal = db.GetHistory(appId, 1).FirstOrDefault();
-                bool changed = DeltaService.HasChanged(snap, lastRemote);
-
-                if (!changed)
+                if (!DeltaService.HasChanged(snap, last))
                 {
                     Info($"  [DELTA] No change detected — skipping storage.");
                     skipped++;
@@ -112,6 +168,10 @@ public static class CollectCommand
 
                 saved++;
             }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
             catch (Exception ex)
             {
                 Err($"  [ERROR] AppID {appId}: {ex.Message}");
@@ -130,13 +190,6 @@ public static class CollectCommand
         if (!string.IsNullOrWhiteSpace(cliValue)) return cliValue;
         var env = Environment.GetEnvironmentVariable(envVar);
         return string.IsNullOrWhiteSpace(env) ? null : env;
-    }
-
-    private static HttpClient BuildHttpClient()
-    {
-        var c = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
-        c.DefaultRequestHeaders.UserAgent.ParseAdd("SteamDataPuller/1.0");
-        return c;
     }
 
     private static void Info(string msg)  { Console.ForegroundColor = ConsoleColor.Cyan;  Console.WriteLine(msg); Console.ResetColor(); }

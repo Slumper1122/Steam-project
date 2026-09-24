@@ -1,0 +1,48 @@
+services:
+  collector:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: steamdata:latest
+    container_name: steam-collector
+
+    # Secrets stay outside the image. Copy .env.example to .env and fill it in.
+    env_file:
+      - .env
+    environment:
+      # One pull per hour, scheduled by the app itself — no cron, no shell.
+      COLLECT_INTERVAL_SECONDS: "3600"
+
+    # ── Hardening ─────────────────────────────────────────────────────────────
+    # The image already runs as UID 1654; these settings make sure a compromised
+    # process cannot escalate or modify anything except its own data volume.
+    read_only: true                  # entire root filesystem is immutable
+    security_opt:
+      - no-new-privileges:true       # setuid binaries cannot raise privileges
+    cap_drop:
+      - ALL                          # no Linux capabilities at all
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+
+    # The one writable location. Owned by UID 1654 (set in the Dockerfile).
+    volumes:
+      - steam-data:/data
+
+    # ── Resource limits ───────────────────────────────────────────────────────
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.50"
+
+    # ── Log rotation (otherwise an hourly job fills the disk over months) ─────
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    restart: unless-stopped
+
+volumes:
+  steam-data:
