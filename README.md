@@ -454,6 +454,27 @@ container one-shot from crontab:
   -v steam-data:/data ghcr.io/slumper1122/steam-project:latest
 ```
 
+### Transient failure handling
+
+Steam rate-limits `store.steampowered.com/api/appdetails` without warning and
+occasionally answers with `502`/`503`. Because a collection run exits non-zero if
+any game fails, a single unlucky response used to turn a whole scheduled run red —
+the same commit would succeed at 13:00 and fail at 18:00.
+
+`RetryHandler` sits in the `HttpClient` pipeline, so every client (Steam, SteamSpy,
+Supabase) inherits the same policy:
+
+| Behaviour | Detail |
+|-----------|--------|
+| Retried statuses | `408`, `429`, `500`, `502`, `503`, `504` |
+| Retried failures | Connection errors and per-attempt timeouts (30 s each) |
+| Attempts | 4, backing off 1 s → 2 s → 4 s plus jitter, capped at 30 s |
+| `Retry-After` | Honoured when present, as both a delta and a date |
+| Non-idempotent requests | `POST` is replayed only on `429`, where the server definitively rejected it — otherwise a flaky connection could insert the same snapshot twice |
+
+The per-attempt timeout lives in the handler rather than `HttpClient.Timeout`,
+because that budget covers the whole pipeline and would be eaten by the backoff.
+
 ---
 
 ## Data accuracy notes

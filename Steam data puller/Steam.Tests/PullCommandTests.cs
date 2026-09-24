@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Net;
 using RichardSzalay.MockHttp;
 using SteamPuller.Commands;
+using SteamPuller.Services;
 
 namespace Steam.Tests;
 
@@ -57,7 +58,7 @@ public class PullCommandTests : IDisposable
         return mock;
     }
 
-    private Task<int> Run(MockHttpMessageHandler mock, int appId = Fixtures.AppId) =>
+    private Task<int> Run(HttpMessageHandler mock, int appId = Fixtures.AppId) =>
         PullCommand.RunAsync(appId, "TESTKEY", OutDir, DbPath, CancellationToken.None, mock);
 
     [Fact]
@@ -149,7 +150,8 @@ public class PullCommandTests : IDisposable
         withoutSpy.When("https://steamspy.com/api.php*")
                   .Respond(HttpStatusCode.ServiceUnavailable);
 
-        var exit = await Run(withoutSpy);
+        // SteamSpy stays down through every retry, so run without the backoff.
+        var exit = await Run(new RetryHandler(withoutSpy, delay: (_, _) => Task.CompletedTask));
 
         Assert.Equal(0, exit);
         Assert.Contains("N/A", Output);

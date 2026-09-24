@@ -73,6 +73,9 @@ The container runs as a non-root user (UID 1654) with a read-only root filesyste
 ### NFR-9 — Restricted image distribution
 Images are published to a private GitHub Container Registry package. Pulling requires a fine-grained personal access token limited to `read:packages`. Every build is scanned with Trivy and publication fails on a fixable HIGH or CRITICAL vulnerability.
 
+### NFR-10 — Resilience to transient API failures
+Rate-limited and server-error responses (`408`, `429`, `5xx`), connection errors and request timeouts are retried up to four times with exponential backoff and jitter, honouring `Retry-After`. A run must not fail because of a single throttled response. Non-idempotent requests are replayed only when the server definitively rejected them (`429`), so retries can never duplicate a stored snapshot.
+
 ---
 
 ## API Dependencies

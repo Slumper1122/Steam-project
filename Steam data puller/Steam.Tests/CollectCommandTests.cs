@@ -1,6 +1,7 @@
 using System.Net;
 using RichardSzalay.MockHttp;
 using SteamPuller.Commands;
+using SteamPuller.Services;
 
 namespace Steam.Tests;
 
@@ -85,11 +86,20 @@ public class CollectCommandTests : IDisposable
 
     // ── Collection runs ───────────────────────────────────────────────────────
 
-    private static MockHttpMessageHandler SteamApisRespond()
+    /// <param name="appDetails">
+    /// Overrides the store response. MockHttp answers with the first matching rule,
+    /// so a caller cannot register a competing one afterwards.
+    /// </param>
+    private static MockHttpMessageHandler SteamApisRespond(
+        Func<HttpRequestMessage, HttpResponseMessage>? appDetails = null)
     {
         var mock = new MockHttpMessageHandler();
-        mock.When("https://store.steampowered.com/api/appdetails*")
-            .Respond("application/json", Fixtures.AppDetails());
+        var details = mock.When("https://store.steampowered.com/api/appdetails*");
+        if (appDetails is null)
+            details.Respond("application/json", Fixtures.AppDetails());
+        else
+            details.Respond(appDetails);
+
         mock.When("https://api.steampowered.com/ISteamUserStats/GetNumberOfCurrentPlayers/*")
             .Respond("application/json", Fixtures.CurrentPlayers());
         mock.When("https://store.steampowered.com/appreviews/*")
@@ -103,10 +113,18 @@ public class CollectCommandTests : IDisposable
         return mock;
     }
 
+    /// <summary>
+    /// Wraps a mock in the production retry pipeline but skips the backoff, so the
+    /// retry behaviour is exercised without the test sitting through seven seconds
+    /// of waiting.
+    /// </summary>
+    private static RetryHandler NoSleep(HttpMessageHandler inner) =>
+        new(inner, delay: (_, _) => Task.CompletedTask);
+
     private static HttpResponseMessage JsonResponse(HttpStatusCode status, string body) =>
         new(status) { Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json") };
 
-    private Task<int> RunWith(MockHttpMessageHandler mock, string? sbUrl = null, string? sbKey = null) =>
+    private Task<int> RunWith(HttpMessageHandler mock, string? sbUrl = null, string? sbKey = null) =>
         CollectCommand.RunAsync(
             WriteWatchlist("""{"games":[264710]}"""),
             apiKey: "TESTKEY",
@@ -145,7 +163,22 @@ public class CollectCommandTests : IDisposable
         var mock = new MockHttpMessageHandler();
         mock.When("*").Respond(HttpStatusCode.ServiceUnavailable);
 
-        Assert.Equal(1, await RunWith(mock));
+        Assert.Equal(1, await RunWith(NoSleep(mock)));
+    }
+
+    [Fact]
+    public async Task RateLimitedSteamApi_RecoversOnRetry()
+    {
+        // Steam throttles /api/appdetails without warning; one 429 must not
+        // fail the whole run.
+        var attempts = 0;
+        var mock = SteamApisRespond(appDetails: _ =>
+            ++attempts == 1
+                ? new HttpResponseMessage(HttpStatusCode.TooManyRequests)
+                : JsonResponse(HttpStatusCode.OK, Fixtures.AppDetails()));
+
+        Assert.Equal(0, await RunWith(NoSleep(mock)));
+        Assert.Equal(2, attempts);
     }
 
     [Fact]
