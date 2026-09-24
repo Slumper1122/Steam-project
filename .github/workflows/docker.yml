@@ -120,7 +120,13 @@ jobs:
           python3 - <<'PY'
           import json, os, pathlib, sys
 
-          report   = json.loads(pathlib.Path('trivy.json').read_text())
+          report = json.loads(pathlib.Path('trivy.json').read_text())
+
+          # An empty report must mean "scanned, nothing found" and never
+          # "the scanner failed", so confirm Trivy really inspected the image.
+          if 'SchemaVersion' not in report or not report.get('ArtifactName'):
+              sys.exit('::error::Trivy produced no usable report; refusing to treat that as a pass')
+
           findings = [
               (v.get('Severity', '?'), result.get('Target', '?'), v['VulnerabilityID'],
                v.get('PkgName', '?'), v.get('InstalledVersion', '?'), v.get('FixedVersion', '?'))
