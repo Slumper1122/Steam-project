@@ -15,6 +15,11 @@ jobs:
     name: Build, Test & Coverage
     runs-on: ubuntu-latest
 
+    permissions:
+      contents: read
+      checks: write         # publish-unit-test-result-action creates a check run
+      pull-requests: write  # ...and comments the summary on the PR
+
     steps:
       - uses: actions/checkout@v4
 
@@ -42,9 +47,12 @@ jobs:
           --results-directory TestResults
           --logger "trx;LogFileName=results.trx"
 
+      # Reporting only. A problem here must never mask the coverage gate below,
+      # which is the step that actually blocks a merge.
       - name: Publish test results
         uses: EnricoMi/publish-unit-test-result-action@v2
         if: always()
+        continue-on-error: true
         with:
           files: TestResults/**/*.trx
 
@@ -63,23 +71,24 @@ jobs:
           path: coverage-report/
           retention-days: 14
 
+      # A gate that skips itself when something is missing is not a gate, so an
+      # unreadable report fails the build just like insufficient coverage does.
       - name: Check branch coverage ≥ 60%
         run: |
-          python3 -c "
+          python3 - <<'PY'
           import re, sys
-          try:
-              text = open('coverage-report/Summary.txt').read()
-          except FileNotFoundError:
-              print('Summary.txt not found — skipping coverage gate')
-              sys.exit(0)
-          m = re.search(r'Branch coverage:\s*([\d.]+)%', text)
-          if not m:
-              print('Could not parse branch coverage — skipping')
-              sys.exit(0)
-          val = float(m.group(1))
-          print(f'Branch coverage: {val}%')
-          if val < 60:
-              print(f'FAIL: required >= 60%, got {val}%')
-              sys.exit(1)
-          print('OK')
-          "
+          from pathlib import Path
+
+          summary = Path('coverage-report/Summary.txt')
+          if not summary.exists():
+              sys.exit('::error::Summary.txt missing — coverage could not be verified')
+
+          match = re.search(r'Branch coverage:\s*([\d.]+)%', summary.read_text())
+          if not match:
+              sys.exit('::error::No branch coverage line in Summary.txt')
+
+          actual = float(match.group(1))
+          print(f'Branch coverage: {actual}% (required: 60%)')
+          if actual < 60:
+              sys.exit(f'::error::Branch coverage {actual}% is below the 60% minimum')
+          PY

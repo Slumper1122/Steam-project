@@ -72,7 +72,7 @@ jobs:
       # Fails the build on known HIGH/CRITICAL CVEs so a vulnerable image is
       # never published.
       - name: Scan image (Trivy)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: steamdata:ci
           format: sarif
