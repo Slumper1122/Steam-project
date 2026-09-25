@@ -47,7 +47,7 @@ When `SUPABASE_URL` and `SUPABASE_KEY` are set, each stored snapshot is also wri
 ## Non-Functional Requirements
 
 ### NFR-1 — Flexible scheduling
-The tool runs one-shot by default so an external scheduler (cron, systemd timer, GitHub Actions, Kubernetes CronJob) stays in control. An internal interval loop is available for environments without a scheduler.
+The tool runs one-shot by default so an external scheduler (cron, systemd timer, GitHub Actions, Kubernetes CronJob) stays in control. An internal interval loop is available for environments without a scheduler. The hosted collector is triggered through `workflow_dispatch` by an external cron rather than GitHub's own `schedule:`, which proved too unreliable to meet the hourly requirement.
 
 ### NFR-2 — Offline-first storage
 All fetched data is stored locally (JSON + SQLite) so it can be queried without an internet connection after the initial pull.

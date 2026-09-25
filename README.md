@@ -23,7 +23,7 @@ Designed to capture the full lifecycle of singleplayer games — from early acce
 ## Architecture
 
 ```
-GitHub Actions (cron: every hour)
+External cron ──► GitHub Actions (workflow_dispatch, hourly)
          │
          ▼
 ┌────────────────────────────────────────────────────────────┐
@@ -243,7 +243,8 @@ Push to GitHub — Actions run automatically.
 | Workflow | Trigger | What it does |
 |----------|---------|--------------|
 | `ci.yml` | Every push / PR | Build → test → coverage check → block merge if < 60% |
-| `collect.yml` | Every hour (cron) | Pull Steam data → delta check → push to Supabase |
+| `collect.yml` | `workflow_dispatch`, hourly from an external cron | Pull Steam data → delta check → push to Supabase |
+| `docker.yml` | Push to `main` / PR | Build image → Trivy scan → publish to GHCR |
 
 ### 2. Add GitHub Secrets
 
@@ -438,12 +439,34 @@ The container schedules itself, but that is one of several options:
 
 | Approach | Reliability | Cost | Notes |
 |----------|-------------|------|-------|
-| GitHub Actions `schedule:` | Poor | Free | Runs are delayed or dropped under load; observed 2–13 h gaps |
-| External cron → `workflow_dispatch` | Good | Free | e.g. cron-job.org calling the GitHub API; needs a PAT |
-| **Container `--interval` loop** | Good | VPS cost | ← in use: no external dependency, but drifts a few seconds per cycle |
+| GitHub Actions `schedule:` | Poor | Free | Dropped — runs arrived 5–6 h apart against an hourly cron |
+| **External cron → `workflow_dispatch`** | Good | Free | ← in use for the hosted collector; see below |
+| **Container `--interval` loop** | Good | VPS cost | ← in use for the container; no external dependency, drifts a few seconds per cycle |
 | Host `cron` → `docker run` | Very good | VPS cost | Exact wall-clock times; set `COLLECT_INTERVAL_SECONDS=0` |
 | systemd timer | Very good | VPS cost | Adds `Persistent=true` to catch up after downtime |
 | Kubernetes `CronJob` | Very good | Cluster cost | Overkill for two games |
+
+#### External cron setup
+
+`collect.yml` has no `schedule:` trigger; it only responds to `workflow_dispatch`,
+which an external cron calls hourly:
+
+```
+POST https://api.github.com/repos/<owner>/<repo>/actions/workflows/collect.yml/dispatches
+
+Accept:                application/vnd.github+json
+Authorization:         Bearer <fine-grained PAT>
+Content-Type:          application/json
+X-GitHub-Api-Version:  2022-11-28
+
+{"ref":"main"}
+```
+
+The token needs exactly one repository permission: **Actions: Read and write**.
+A successful dispatch answers `204 No Content` with an empty body.
+
+Fine-grained tokens expire within a year, so the collection stops silently once it
+lapses. Enable the cron service's failure notification to catch that.
 
 To hand scheduling to the host instead, disable the internal loop and run the
 container one-shot from crontab:
