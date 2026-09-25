@@ -30,17 +30,34 @@ jobs:
             --no-restore --configuration Release
 
       - name: Collect data
-        run: >
-          dotnet run
-          --project "Steam data puller/Steam data puller/Steam data puller.csproj"
-          --no-build --configuration Release
-          -- collect
-          --watchlist watchlist.json
-          --output data
+        run: |
+          set -o pipefail
+          dotnet run \
+            --project "Steam data puller/Steam data puller/Steam data puller.csproj" \
+            --no-build --configuration Release \
+            -- collect \
+            --watchlist watchlist.json \
+            --output data \
+            2>&1 | tee collect.log
         env:
           STEAM_API_KEY:  ${{ secrets.STEAM_API_KEY }}
           SUPABASE_URL:   ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY:   ${{ secrets.SUPABASE_KEY }}
+
+      # Surfaces the reason a scheduled run failed in the run summary, so
+      # diagnosing one does not require downloading the raw job log.
+      - name: Surface collector output
+        if: always()
+        run: |
+          {
+            echo '## Collector output'
+            echo '```'
+            cat collect.log || echo '(no output captured)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          grep -E '\[(ERROR|RETRY)\]' collect.log | while read -r line; do
+            echo "::error::$line"
+          done || true
 
       - name: Upload local snapshots
         uses: actions/upload-artifact@v4

@@ -454,6 +454,25 @@ container one-shot from crontab:
   -v steam-data:/data ghcr.io/slumper1122/steam-project:latest
 ```
 
+### Steam response quirks
+
+Steam's `appdetails` endpoint documents the response as being keyed by the
+requested AppID:
+
+```json
+{ "264710": { "success": true, "data": { "steam_appid": 264710, ... } } }
+```
+
+In practice it has been seen answering with an **unrelated key** while the payload
+stays correct — a request for `264710` came back under `1619300`, and `427520`
+under `3311770`. Because it is served as HTTP 200, retries do not help: the client
+looked up the requested key, found nothing, and reported the game as missing.
+
+`GetAppDetailsAsync` therefore trusts the payload over the key. It still matches by
+key when present, falls back to the sole entry otherwise, and rejects the response
+if `data.steam_appid` belongs to a different game, so one game's numbers can never
+be filed under another.
+
 ### Transient failure handling
 
 Steam rate-limits `store.steampowered.com/api/appdetails` without warning and

@@ -35,6 +35,62 @@ public class SteamApiClientTests
         Assert.Null(result);
     }
 
+    [Fact]
+    public async Task GetAppDetails_UnexpectedEnvelopeKey_StillResolvesByPayload()
+    {
+        // Observed in production: Steam answered a request for 264710 under the
+        // key 1619300 while data.steam_appid stayed correct, which silently
+        // failed every collection run.
+        var mock = new MockHttpMessageHandler();
+        mock.When("*").Respond("application/json",
+            Fixtures.AppDetails(Fixtures.AppId, envelopeKey: 1619300));
+
+        var client = new SteamApiClient(mock.ToHttpClient(), FakeKey);
+        var result = await client.GetAppDetailsAsync(Fixtures.AppId);
+
+        Assert.NotNull(result);
+        Assert.Equal("Subnautica", result["name"]?.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task GetAppDetails_PayloadForADifferentGame_ReturnsNull()
+    {
+        // Accepting this would file one game's players and price under another.
+        var mock = new MockHttpMessageHandler();
+        mock.When("*").Respond("application/json",
+            Fixtures.AppDetails(appId: 730, envelopeKey: 264710));
+
+        var client = new SteamApiClient(mock.ToHttpClient(), FakeKey);
+        var result = await client.GetAppDetailsAsync(427520);
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public async Task GetAppDetails_MultipleEntriesWithoutAMatchingKey_ReturnsNull()
+    {
+        // With more than one entry there is no unambiguous fallback.
+        var mock = new MockHttpMessageHandler();
+        mock.When("*").Respond("application/json",
+            """{"111":{"success":true,"data":{"steam_appid":111}},"222":{"success":true,"data":{"steam_appid":222}}}""");
+
+        var client = new SteamApiClient(mock.ToHttpClient(), FakeKey);
+        var result = await client.GetAppDetailsAsync(264710);
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public async Task GetAppDetails_EmptyEnvelope_ReturnsNull()
+    {
+        var mock = new MockHttpMessageHandler();
+        mock.When("*").Respond("application/json", "{}");
+
+        var client = new SteamApiClient(mock.ToHttpClient(), FakeKey);
+
+        Assert.Null(await client.GetAppDetailsAsync(264710));
+    }
+
     // ── GetCurrentPlayers ─────────────────────────────────────────────────────
 
     [Fact]

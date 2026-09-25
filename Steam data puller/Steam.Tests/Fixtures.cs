@@ -5,9 +5,13 @@ internal static class Fixtures
 {
     public const int AppId = 264710;
 
-    public static string AppDetails(int appId = AppId) =>
+    /// <param name="envelopeKey">
+    /// Steam normally keys the response by the requested AppID, but has been seen
+    /// returning an unrelated id while <c>data.steam_appid</c> stays correct.
+    /// </param>
+    public static string AppDetails(int appId = AppId, int? envelopeKey = null) =>
         $@"{{
-          ""{appId}"": {{
+          ""{envelopeKey ?? appId}"": {{
             ""success"": true,
             ""data"": {{
               ""type"": ""game"",

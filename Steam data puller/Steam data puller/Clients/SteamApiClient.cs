@@ -14,10 +14,27 @@ public sealed class SteamApiClient(HttpClient http, string apiKey)
         var url  = $"{Store}/api/appdetails?appids={appId}&cc=us&l=en";
         var json = await http.GetStringAsync(url, ct);
         var root = JsonNode.Parse(json)?.AsObject();
-        var entry = root?[appId.ToString()];
+        if (root is null) return null;
+
+        // Steam documents the envelope as being keyed by the requested AppID, but
+        // has been observed answering with an unrelated id while data.steam_appid
+        // still holds the request. Falling back to the sole entry keeps us working
+        // either way; a response carrying several entries is still matched by key,
+        // so we can never pick the wrong game out of a batch.
+        var entry = root[appId.ToString()]?.AsObject()
+                 ?? (root.Count == 1 ? root.First().Value?.AsObject() : null);
+
         if (entry?["success"]?.GetValue<bool>() != true)
             return null;
-        return entry["data"]?.AsObject();
+
+        var data = entry["data"]?.AsObject();
+
+        // Guard against attributing one game's numbers to another.
+        var returnedId = data?["steam_appid"]?.GetValue<int>();
+        if (returnedId is not null && returnedId != appId)
+            return null;
+
+        return data;
     }
 
     // ── Live player count ─────────────────────────────────────────────────────
