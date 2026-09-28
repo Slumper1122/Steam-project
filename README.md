@@ -18,7 +18,7 @@ Designed to capture the full lifecycle of singleplayer games — from early acce
 - **History table** — tabular view of all stored snapshots
 - **`collect` command** — unattended batch pull for all games in `watchlist.json`
 - **GitHub Actions** — hourly data collection + CI test gate on every PR
-- **Containerized** — 87 MB hardened image: non-root, read-only filesystem, no shell
+- **Containerized** — 129 MB hardened image: non-root, read-only filesystem, no shell
 
 ## Architecture
 
@@ -341,34 +341,37 @@ docker run -v ./watchlist.json:/app/watchlist.json:ro ...
 
 ### Image size
 
-Final image: **~87 MB** (~50 MB compressed on the registry), of which the
-application itself is 2.1 MB. Four things get it there:
+Final image: **129 MB**, of which the application is 2.3 MB — the remaining
+127 MB is the .NET runtime itself. Sizes below are as reported by
+`docker image ls` (uncompressed); the registry download is smaller.
 
-**1. Multi-stage build.** The .NET SDK needed to compile is ~800 MB. It lives in
+**1. Multi-stage build.** The .NET SDK needed to compile is 1.22 GB. It lives in
 the `build` stage only; the final image copies the compiled output and nothing
-else.
+else. This is by far the largest saving.
 
 **2. Chiseled base image.** `runtime:8.0-noble-chiseled` is Ubuntu stripped down
 to what .NET needs — no shell, no package manager, no `apt`, no busybox:
 
-| Base image | Size | Notes |
-|------------|------|-------|
-| `sdk:8.0` | ~800 MB | Build only, never ship this |
-| `aspnet:8.0` | ~220 MB | Includes the web stack we don't use |
-| `runtime:8.0` | ~190 MB | Full Ubuntu userland |
-| `runtime:8.0-alpine` | ~85 MB | musl libc, needs `linux-musl-x64` |
-| **`runtime:8.0-noble-chiseled`** | **~85 MB** | ← in use: glibc, but no shell |
+| Base image | Measured size | Notes |
+|------------|---------------|-------|
+| `sdk:8.0-noble` | 1.22 GB | Build only, never ship this |
+| `runtime:8.0` | 285 MB | Full Ubuntu userland |
+| `runtime:8.0-noble-chiseled-extra` | 182 MB | Adds ICU and other extras we don't need |
+| **`runtime:8.0-noble-chiseled`** | **125 MB** | ← in use: glibc, no shell, no ICU |
 
-**3. `InvariantGlobalization=true`.** Drops the ICU dependency (~30 MB) that the
-chiseled image does not ship anyway. The app only formats dates and numbers, so
-invariant culture is sufficient.
+**3. `InvariantGlobalization=true`.** Not a size saving — the non-`extra` chiseled
+image ships no ICU at all, so this flag is what lets the app *start* there. It is
+what makes the 57 MB step down from `chiseled-extra` possible.
 
 **4. `SatelliteResourceLanguages=en`.** The NuGet dependencies ship translated
-exception messages in 13 languages. Removing them saves 240 KB.
+exception messages in 13 languages. Removing them saves 240 KB (2.38 MB → 2.14 MB
+of published output).
 
-**How to go smaller.** Publishing self-contained + trimmed onto
-`runtime-deps:8.0-noble-chiseled` would land around 45–55 MB, and Native AOT
-around 25 MB. Neither is enabled here: Dapper and `System.Text.Json` both
+**How to go smaller.** Because 127 MB of the 129 MB is the framework, the only
+meaningful further step is to stop shipping the whole framework. Publishing
+self-contained + trimmed onto `runtime-deps:8.0-noble-chiseled` would land around
+45–55 MB, and Native AOT around 25 MB. Neither is enabled here: Dapper and
+`System.Text.Json` both
 resolve properties by reflection, which the trimmer cannot see, so the build
 would succeed and then fail at runtime with an empty result set. Going down that
 path means switching to source-generated JSON contexts and adding an end-to-end

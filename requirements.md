@@ -65,7 +65,7 @@ Beyond the free public APIs listed in FR-2, no paid services, accounts, or exter
 Unit tests cover the API clients, snapshot assembly, both storage layers and the delta logic. CI fails below 60% branch coverage, blocking the merge.
 
 ### NFR-7 — Containerized deployment
-The collector ships as a Linux container image built from a chiseled base, targeting roughly 87 MB. The build must not embed credentials, and the SDK must not appear in the final image.
+The collector ships as a Linux container image built from a chiseled base; the measured size is 129 MB, of which 2.3 MB is the application. The build must not embed credentials, and the SDK must not appear in the final image.
 
 ### NFR-8 — Container hardening
 The container runs as a non-root user (UID 1654) with a read-only root filesystem, all Linux capabilities dropped and `no-new-privileges` set. Only the `/data` volume is writable. Application files are owned by root and mounted read-only so the process cannot modify its own binaries.
