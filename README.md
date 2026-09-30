@@ -629,6 +629,15 @@ ssh you@garage-collector               # must succeed without a password first
 sudo bash /opt/steamdata/harden-ssh.sh # then, on the box, from that account
 ```
 
+Windows ships OpenSSH but not `ssh-copy-id`, so from PowerShell append the key
+by hand instead. The `chmod` calls matter: `sshd` ignores an `authorized_keys`
+file that others can write.
+
+```powershell
+Get-Content $env:USERPROFILE\.ssh\id_ed25519.pub | ssh you@garage-collector `
+  "mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
+```
+
 The script grants access to whichever account ran `sudo`, and refuses to proceed
 unless that account is in the `sudo` group and already has a key in
 `authorized_keys`. It then tells you to keep the current session open until a
