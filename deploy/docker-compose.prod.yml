@@ -1,0 +1,58 @@
+# Production compose file for the garage box.
+#
+# Unlike the repository root compose file this never builds — it runs the image
+# that CI already built, scanned and published, so the 4 GB laptop does not have
+# to host a 1.2 GB .NET SDK.
+#
+#   cd /opt/steamdata && docker compose pull && docker compose up -d
+
+services:
+  collector:
+    image: ${IMAGE:-ghcr.io/slumper1122/steam-project:latest}
+    container_name: steam-collector
+    pull_policy: always
+
+    env_file:
+      - .env
+    environment:
+      # One pass per hour, scheduled by the app itself — no cron, no shell.
+      COLLECT_INTERVAL_SECONDS: "3600"
+
+      # Backup collector: skip a game whose newest cloud snapshot is younger
+      # than 90 minutes, i.e. only fill in what the GitHub runner missed. The
+      # 90 is deliberately wider than the hourly cadence so a late-but-healthy
+      # primary run does not trigger a duplicate here.
+      COLLECT_STANDBY_MINUTES: "90"
+
+    # ── Hardening ─────────────────────────────────────────────────────────────
+    # The image already runs as UID 1654; these settings make sure a compromised
+    # process cannot escalate or modify anything except its own data volume.
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+
+    volumes:
+      - steam-data:/data
+
+    # ── Resource limits ───────────────────────────────────────────────────────
+    # Sized so the collector cannot starve a 4 GB machine.
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.50"
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    restart: unless-stopped
+
+volumes:
+  steam-data:

@@ -1,0 +1,7 @@
+# Scripts and unit files run on Linux. A CRLF checkout on Windows would commit
+# carriage returns that the shell reads as part of the shebang, so pin them.
+*.sh        text eol=lf
+*.service   text eol=lf
+*.timer     text eol=lf
+Dockerfile  text eol=lf
+*.yml       text eol=lf

@@ -1,0 +1,17 @@
+[Unit]
+Description=Pull the newest collector image and redeploy if it changed
+Documentation=https://github.com/Slumper1122/Steam-project
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/steamdata/update.sh
+
+# A home connection drops often enough that a hung pull must not wedge the timer.
+TimeoutStartSec=10min
+
+# Output goes to the journal: `journalctl -u steamdata-update`
+StandardOutput=journal
+StandardError=journal

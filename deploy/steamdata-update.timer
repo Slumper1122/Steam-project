@@ -1,0 +1,19 @@
+[Unit]
+Description=Check for a new collector image every 6 hours
+Documentation=https://github.com/Slumper1122/Steam-project
+
+[Timer]
+# Six hours is plenty: the collector keeps working on the current image, and a
+# new one only appears when something is pushed to main.
+OnCalendar=*-*-* 03,09,15,21:20:00
+
+# Spread the pull over ten minutes so every box behind this connection does not
+# hit the registry at the same second.
+RandomizedDelaySec=10min
+
+# A laptop that was asleep or unplugged catches up on boot instead of waiting
+# for the next slot.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -188,48 +188,48 @@ dotnet run -- pull 264710 --key YOUR_KEY --output ./snapshots --db ./mydata.db
 
 ```
 Steam-project/
+├── Steam data puller/
+│   ├── Steam data puller.slnx
+│   ├── Steam data puller/
+│   │   ├── Program.cs                     ← CLI wiring (System.CommandLine)
+│   │   ├── Models/GameSnapshot.cs         ← all data models
+│   │   ├── Clients/
+│   │   │   ├── SteamApiClient.cs          ← Store + Web + Reviews + News APIs
+│   │   │   ├── SteamSpyClient.cs          ← owner and playtime estimates
+│   │   │   └── SupabaseClient.cs          ← REST push to Supabase
+│   │   ├── Services/
+│   │   │   ├── SnapshotBuilder.cs         ← orchestrates all API calls
+│   │   │   ├── DatabaseService.cs         ← SQLite (Dapper)
+│   │   │   ├── JsonStorage.cs             ← JSON file I/O
+│   │   │   ├── DeltaService.cs            ← skip unchanged snapshots, row age
+│   │   │   ├── HttpClientFactory.cs       ← one place for HTTP configuration
+│   │   │   └── RetryHandler.cs            ← backoff for throttled Steam calls
+│   │   └── Commands/
+│   │       ├── PullCommand.cs             ← single game
+│   │       ├── HistoryCommand.cs
+│   │       ├── DeltaCommand.cs
+│   │       └── CollectCommand.cs          ← watchlist batch, interval, standby
+│   └── Steam.Tests/                       ← xUnit, 133 tests
+├── deploy/                                ← the self-hosted garage box
+│   ├── setup-host.sh                      ← Docker, Tailscale, firewall, updates
+│   ├── harden-ssh.sh                      ← key-only SSH bound to Tailscale
+│   ├── install.sh                         ← lays down the app and the timer
+│   ├── update.sh                          ← pull newest image, redeploy if changed
+│   ├── docker-compose.prod.yml            ← runs the published image, hardened
+│   ├── steamdata-update.service
+│   └── steamdata-update.timer
+├── .github/workflows/
+│   ├── ci.yml                             ← build + test + coverage gate
+│   ├── collect.yml                        ← hourly collection (external cron)
+│   └── docker.yml                         ← build + Trivy scan + GHCR push
+├── Dockerfile                             ← multi-stage, chiseled, non-root
+├── docker-compose.yml                     ← local dev runtime, hardened
+├── .dockerignore                          ← keeps secrets and build output out
+├── .env.example                           ← template for local secrets
+├── watchlist.json                         ← App IDs to monitor
+├── supabase_schema.sql                    ← run once in the Supabase SQL Editor
 ├── README.md
-├── requirements.md
-├── .gitignore
-└── Steam data puller/
-    ├── Steam data puller.slnx
-    └── Steam data puller/
-        ├── Steam data puller.csproj
-        ├── Program.cs
-        ├── Models/
-        │   └── GameSnapshot.cs        ← all data models
-        ├── Clients/
-        │   ├── SteamApiClient.cs      ← Steam Store + Web + Reviews APIs
-        │   └── SteamSpyClient.cs      ← SteamSpy API
-        ├── Services/
-        │   ├── SnapshotBuilder.cs     ← orchestrates all API calls
-        │   ├── DatabaseService.cs     ← SQLite (Dapper)
-        │   └── JsonStorage.cs         ← JSON file I/O
-        ├── Commands/
-        │   ├── PullCommand.cs
-        │   ├── HistoryCommand.cs
-        │   ├── DeltaCommand.cs
-        │   └── CollectCommand.cs      ← batch pull for watchlist
-        ├── Clients/
-        │   ├── SteamApiClient.cs
-        │   ├── SteamSpyClient.cs
-        │   └── SupabaseClient.cs      ← REST push to Supabase
-        └── Services/
-            ├── SnapshotBuilder.cs
-            ├── DatabaseService.cs
-            ├── JsonStorage.cs
-            └── DeltaService.cs        ← skip unchanged snapshots
-    Steam.Tests/                       ← xUnit smoke tests (45 tests)
-watchlist.json                         ← list of App IDs to monitor
-supabase_schema.sql                    ← run once in Supabase SQL Editor
-Dockerfile                             ← multi-stage, chiseled, non-root
-docker-compose.yml                     ← hardened runtime (read-only, no caps)
-.dockerignore                          ← keeps secrets and build output out
-.env.example                           ← template for local secrets
-.github/workflows/
-    ci.yml                             ← build + test + coverage on every PR
-    collect.yml                        ← hourly data collection
-    docker.yml                         ← image build + Trivy scan + GHCR push
+└── requirements.md
 ```
 
 ---
@@ -479,6 +479,126 @@ container one-shot from crontab:
   -e COLLECT_INTERVAL_SECONDS=0 \
   -v steam-data:/data ghcr.io/slumper1122/steam-project:latest
 ```
+
+---
+
+## Self-hosted collector (the garage box)
+
+An old laptop running Ubuntu Server acts as a **backup collector** alongside the
+GitHub runner. It exists so the data keeps flowing when GitHub Actions is down,
+degraded, or the external cron fails to fire.
+
+### Why it does not simply run in parallel
+
+Two collectors on the same hourly schedule would write two rows per hour for
+every game, which contradicts the storage-efficiency goal. The box therefore
+runs in **standby mode** (`COLLECT_STANDBY_MINUTES=90`): before touching Steam it
+reads the newest cloud snapshot for a game, and if that is younger than 90
+minutes it does nothing.
+
+| Situation | Newest cloud row | Garage box |
+|-----------|------------------|------------|
+| Primary healthy | 20 min old | stands by, no Steam call at all |
+| Primary missed a slot | 3 h old | collects and uploads |
+| Nothing stored yet | none | collects |
+| Supabase unreachable | unknown | collects — never assume coverage it cannot see |
+
+The lookup happens *before* the snapshot is built, so standing by costs one REST
+call rather than six Steam API calls. The threshold is deliberately wider than
+the hourly cadence: a late-but-healthy primary run must not trigger a duplicate.
+
+### Security model
+
+The box is a consumer laptop on a home network, so the design assumes it will be
+neglected for months.
+
+**No inbound ports.** Nothing is forwarded on the router. The machine reaches the
+internet outbound only — to Steam, to Supabase, and to GHCR. There is no
+listening service an internet scanner can find.
+
+**SSH only over Tailscale.** `sshd` binds to the Tailscale address, not `0.0.0.0`.
+Even with the firewall flushed it would not answer on the LAN. On top of that,
+`ufw` denies all incoming traffic except on the `tailscale0` interface. Two
+independent layers, because one misconfiguration should not be enough.
+
+**Keys only, no root.** Passwords are refused outright, so there is nothing to
+brute-force and `fail2ban` is unnecessary. `PermitRootLogin no` and
+`AllowUsers steam` mean administration goes through `sudo`, which attributes each
+action to a person.
+
+**Pull, never push.** GitHub holds no credential for this machine and never
+connects to it. The box pulls from GHCR with a **read-only** (`read:packages`)
+token, so even full compromise of the laptop cannot overwrite a published image.
+
+**Secrets are root-only.** `/opt/steamdata/.env` and `/etc/steamdata/ghcr.token`
+are `0600 root:root`. The `steam` account is deliberately **not** in the `docker`
+group — that membership is equivalent to root and would bypass `sudo` logging.
+
+**The container is hardened as before:** UID 1654, read-only root filesystem,
+all capabilities dropped, `no-new-privileges`, capped at 256 MB and half a core
+so it cannot starve a 4 GB machine.
+
+### Installation
+
+Four scripts in `deploy/`, run on the box in this order.
+
+**1. Install Ubuntu Server LTS** on the laptop. Enable OpenSSH during setup, and
+in the BIOS set it to power on after a power cut, so it recovers on its own.
+Closing the lid should not suspend it:
+
+```bash
+sudo sed -i 's/^#HandleLidSwitch=.*/HandleLidSwitch=ignore/' /etc/systemd/logind.conf
+sudo systemctl restart systemd-logind
+```
+
+**2. Bootstrap** — installs Docker, Tailscale, automatic security updates and the
+firewall:
+
+```bash
+git clone https://github.com/Slumper1122/Steam-project.git
+cd Steam-project
+sudo bash deploy/setup-host.sh
+sudo tailscale up --ssh=false --hostname=garage-collector
+```
+
+If you ran this over SSH from the LAN, the script kept a temporary rule open for
+your address so enabling the firewall did not drop the session. Step 4 removes it.
+
+**3. Deploy** the collector and the auto-update timer:
+
+```bash
+sudo bash deploy/install.sh
+sudo nano /opt/steamdata/.env          # STEAM_API_KEY, SUPABASE_URL, SUPABASE_KEY
+sudo nano /etc/steamdata/ghcr.token    # line 1: GitHub username, line 2: read:packages token
+sudo /opt/steamdata/update.sh
+```
+
+**4. Lock SSH down** — only once key login works:
+
+```bash
+ssh-copy-id steam@garage-collector     # from your laptop
+sudo bash /opt/steamdata/harden-ssh.sh
+```
+
+The script refuses to run if `authorized_keys` is empty, and prints a warning to
+keep the current session open until a second one is verified. The box has no
+monitor; a mistake here means carrying a keyboard to the garage.
+
+### Staying current
+
+`steamdata-update.timer` fires four times a day, pulls the newest published
+image and restarts the container only if the digest changed. A failed pull is
+not an error — the running container keeps working on the previous image until
+the next attempt, so a flaky home connection never takes the collector down.
+
+| Command | Purpose |
+|---------|---------|
+| `sudo docker compose -f /opt/steamdata/docker-compose.prod.yml logs -f` | what it is doing now |
+| `sudo /opt/steamdata/update.sh` | deploy the latest image immediately |
+| `systemctl list-timers steamdata-update` | when the next check runs |
+| `journalctl -u steamdata-update -n 50` | update history |
+
+---
 
 ### Steam response quirks
 

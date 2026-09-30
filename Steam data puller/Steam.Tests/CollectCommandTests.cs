@@ -124,7 +124,11 @@ public class CollectCommandTests : IDisposable
     private static HttpResponseMessage JsonResponse(HttpStatusCode status, string body) =>
         new(status) { Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json") };
 
-    private Task<int> RunWith(HttpMessageHandler mock, string? sbUrl = null, string? sbKey = null) =>
+    private Task<int> RunWith(
+        HttpMessageHandler mock,
+        string? sbUrl = null,
+        string? sbKey = null,
+        int standbyMinutes = 0) =>
         CollectCommand.RunAsync(
             WriteWatchlist("""{"games":[264710]}"""),
             apiKey: "TESTKEY",
@@ -133,6 +137,7 @@ public class CollectCommandTests : IDisposable
             outputDir: Path.Combine(_dir, "out"),
             dbPath: Path.Combine(_dir, "test.db"),
             intervalSeconds: 0,
+            standbyMinutes: standbyMinutes,
             ct: CancellationToken.None,
             httpHandler: mock);
 
@@ -226,6 +231,95 @@ public class CollectCommandTests : IDisposable
         mock.When(HttpMethod.Post, $"{url}/rest/v1/*").Respond(HttpStatusCode.Created);
 
         Assert.Equal(0, await RunWith(mock, url, "sb_secret_key"));
+        Assert.Single(Directory.GetFiles(Path.Combine(_dir, "out", "264710"), "*.json"));
+    }
+
+    // ── Standby mode ──────────────────────────────────────────────────────────
+    // The garage box is a backup collector: it must fill the gaps the primary
+    // leaves without doubling up rows when the primary is healthy.
+
+    private const string SbUrl = "https://testproject.supabase.co";
+
+    /// <summary>Mocks Steam plus a Supabase row captured <paramref name="minutesAgo"/> ago.</summary>
+    private static MockHttpMessageHandler RemoteRowAged(int minutesAgo, out Func<int> steamCalls)
+    {
+        var calls = 0;
+        var mock = SteamApisRespond(appDetails: _ =>
+        {
+            calls++;
+            return JsonResponse(HttpStatusCode.OK, Fixtures.AppDetails());
+        });
+        steamCalls = () => calls;
+
+        var capturedAt = DateTimeOffset.UtcNow.AddMinutes(-minutesAgo).ToString("o");
+        mock.When(HttpMethod.Get, $"{SbUrl}/rest/v1/snapshots*").Respond("application/json",
+            $$"""[{"captured_at":"{{capturedAt}}","current_players":1,"total_reviews":1,"owners_low":1,"price_usd":1.0,"discount_pct":0}]""");
+        mock.When(HttpMethod.Post, $"{SbUrl}/rest/v1/*").Respond(HttpStatusCode.Created);
+        return mock;
+    }
+
+    [Fact]
+    public async Task Standby_RemoteIsFresh_SkipsWithoutCallingSteam()
+    {
+        var mock = RemoteRowAged(minutesAgo: 20, out var steamCalls);
+
+        Assert.Equal(0, await RunWith(mock, SbUrl, "sb_secret_key", standbyMinutes: 90));
+
+        Assert.False(Directory.Exists(Path.Combine(_dir, "out", "264710")));
+        Assert.Equal(0, steamCalls());  // bailing out must cost no Steam quota
+    }
+
+    [Fact]
+    public async Task Standby_RemoteIsStale_CollectsNormally()
+    {
+        var mock = RemoteRowAged(minutesAgo: 200, out var steamCalls);
+
+        Assert.Equal(0, await RunWith(mock, SbUrl, "sb_secret_key", standbyMinutes: 90));
+
+        Assert.Single(Directory.GetFiles(Path.Combine(_dir, "out", "264710"), "*.json"));
+        Assert.Equal(1, steamCalls());
+    }
+
+    [Fact]
+    public async Task Standby_Disabled_CollectsEvenWhenRemoteIsFresh()
+    {
+        var mock = RemoteRowAged(minutesAgo: 1, out _);
+
+        Assert.Equal(0, await RunWith(mock, SbUrl, "sb_secret_key", standbyMinutes: 0));
+
+        Assert.Single(Directory.GetFiles(Path.Combine(_dir, "out", "264710"), "*.json"));
+    }
+
+    [Fact]
+    public async Task Standby_RemoteHasNoRows_Collects()
+    {
+        // Nothing stored yet, so there is no primary run to defer to.
+        var mock = SteamApisRespond();
+        mock.When(HttpMethod.Get,  $"{SbUrl}/rest/v1/snapshots*").Respond("application/json", "[]");
+        mock.When(HttpMethod.Post, $"{SbUrl}/rest/v1/*").Respond(HttpStatusCode.Created);
+
+        Assert.Equal(0, await RunWith(mock, SbUrl, "sb_secret_key", standbyMinutes: 90));
+        Assert.Single(Directory.GetFiles(Path.Combine(_dir, "out", "264710"), "*.json"));
+    }
+
+    [Fact]
+    public async Task Standby_LookupFails_CollectsRatherThanAssumingCoverage()
+    {
+        // If we cannot see what the primary did, standing by risks losing the
+        // window entirely. Fail open.
+        var mock = SteamApisRespond();
+        mock.When(HttpMethod.Get,  $"{SbUrl}/rest/v1/snapshots*").Respond(HttpStatusCode.ServiceUnavailable);
+        mock.When(HttpMethod.Post, $"{SbUrl}/rest/v1/*").Respond(HttpStatusCode.Created);
+
+        Assert.Equal(0, await RunWith(NoSleep(mock), SbUrl, "sb_secret_key", standbyMinutes: 90));
+        Assert.Single(Directory.GetFiles(Path.Combine(_dir, "out", "264710"), "*.json"));
+    }
+
+    [Fact]
+    public async Task Standby_WithoutSupabase_IsIgnored()
+    {
+        // There is no primary to observe, so the collector must not go silent.
+        Assert.Equal(0, await RunWith(SteamApisRespond(), standbyMinutes: 90));
         Assert.Single(Directory.GetFiles(Path.Combine(_dir, "out", "264710"), "*.json"));
     }
 

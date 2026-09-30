@@ -122,4 +122,84 @@ public class DeltaServiceTests
         Assert.Equal(0, key.CurrentPlayers);
         Assert.Equal(0, key.TotalReviews);
     }
+
+    // ── AgeOf ─────────────────────────────────────────────────────────────────
+    // Drives the standby collector: a null age means "cannot tell", which the
+    // caller must treat as a reason to collect rather than to stand by.
+
+    private static readonly DateTimeOffset Now =
+        new(2026, 9, 30, 18, 0, 0, TimeSpan.Zero);
+
+    private static JsonObject RowCapturedAt(string? capturedAt)
+    {
+        var row = MakeLastRow();
+        if (capturedAt is not null) row["captured_at"] = capturedAt;
+        return row;
+    }
+
+    [Fact]
+    public void AgeOf_NullRow_ReturnsNull()
+        => Assert.Null(DeltaService.AgeOf(null, Now));
+
+    [Fact]
+    public void AgeOf_RowWithoutTimestamp_ReturnsNull()
+        => Assert.Null(DeltaService.AgeOf(RowCapturedAt(null), Now));
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("not a date")]
+    public void AgeOf_UnparsableTimestamp_ReturnsNull(string raw)
+        => Assert.Null(DeltaService.AgeOf(RowCapturedAt(raw), Now));
+
+    [Fact]
+    public void AgeOf_NonStringTimestamp_ReturnsNull()
+    {
+        var row = MakeLastRow();
+        row["captured_at"] = 1759255200;
+
+        Assert.Null(DeltaService.AgeOf(row, Now));
+    }
+
+    [Theory]
+    // Supabase returns timestamptz; these are the shapes it actually emits.
+    [InlineData("2026-09-30T17:30:00+00:00")]
+    [InlineData("2026-09-30T17:30:00Z")]
+    [InlineData("2026-09-30T19:30:00+02:00")]
+    public void AgeOf_ParsesTimestampFormats(string raw)
+        => Assert.Equal(TimeSpan.FromMinutes(30), DeltaService.AgeOf(RowCapturedAt(raw), Now));
+
+    [Fact]
+    public void AgeOf_KeepsSubSecondPrecision()
+    {
+        // Postgres stores microseconds; truncating them would be harmless here
+        // but silently rounding the age is not something to rely on untested.
+        var age = DeltaService.AgeOf(RowCapturedAt("2026-09-30T17:30:00.123456+00:00"), Now);
+
+        // 0.123456 s = 1,234,560 ticks.
+        Assert.Equal(TimeSpan.FromMinutes(30) - TimeSpan.FromTicks(1_234_560), age);
+    }
+
+    [Fact]
+    public void AgeOf_TimestampWithoutZone_IsTreatedAsUtc()
+    {
+        // A naive string must not be read as local time, or a collector in a
+        // non-UTC zone would compute an age that is hours off.
+        Assert.Equal(TimeSpan.FromMinutes(45),
+            DeltaService.AgeOf(RowCapturedAt("2026-09-30T17:15:00"), Now));
+    }
+
+    [Fact]
+    public void AgeOf_FutureTimestamp_ClampsToZero()
+    {
+        // Clock skew between this machine and the database must not produce a
+        // negative age that reads as "very stale".
+        Assert.Equal(TimeSpan.Zero,
+            DeltaService.AgeOf(RowCapturedAt("2026-09-30T18:05:00Z"), Now));
+    }
+
+    [Fact]
+    public void AgeOf_OldTimestamp_ReturnsFullAge()
+        => Assert.Equal(TimeSpan.FromHours(6),
+            DeltaService.AgeOf(RowCapturedAt("2026-09-30T12:00:00Z"), Now));
 }

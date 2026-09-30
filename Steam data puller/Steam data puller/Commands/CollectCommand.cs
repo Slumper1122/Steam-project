@@ -20,11 +20,13 @@ public static class CollectCommand
         string  outputDir,
         string  dbPath,
         int     intervalSeconds = 0,
+        int     standbyMinutes  = 0,
         CancellationToken ct = default,
         HttpMessageHandler? httpHandler = null)
     {
         if (intervalSeconds <= 0)
-            return await RunOnceAsync(watchlistPath, apiKey, supabaseUrl, supabaseKey, outputDir, dbPath, ct, httpHandler);
+            return await RunOnceAsync(watchlistPath, apiKey, supabaseUrl, supabaseKey,
+                                      outputDir, dbPath, standbyMinutes, ct, httpHandler);
 
         Info($"[SCHEDULE] Looping every {intervalSeconds}s. Send SIGTERM/Ctrl+C to stop.");
 
@@ -32,7 +34,8 @@ public static class CollectCommand
         {
             try
             {
-                await RunOnceAsync(watchlistPath, apiKey, supabaseUrl, supabaseKey, outputDir, dbPath, ct, httpHandler);
+                await RunOnceAsync(watchlistPath, apiKey, supabaseUrl, supabaseKey,
+                                   outputDir, dbPath, standbyMinutes, ct, httpHandler);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -66,9 +69,14 @@ public static class CollectCommand
         string? supabaseKey,
         string  outputDir,
         string  dbPath,
+        int     standbyMinutes,
         CancellationToken ct,
         HttpMessageHandler? httpHandler)
     {
+        var standbyThreshold = standbyMinutes > 0
+            ? TimeSpan.FromMinutes(standbyMinutes)
+            : TimeSpan.Zero;
+
         // ── Validate config ───────────────────────────────────────────────────
         var steamKey = ResolveEnv(apiKey, "STEAM_API_KEY");
         if (steamKey is null)
@@ -105,6 +113,16 @@ public static class CollectCommand
 
         Info($"[COLLECT] Watchlist: {appIds.Length} game(s) — {string.Join(", ", appIds)}");
 
+        if (standbyThreshold > TimeSpan.Zero)
+        {
+            if (useSupabase)
+                Info($"[STANDBY] Only collecting games whose newest cloud snapshot " +
+                     $"is older than {Describe(standbyThreshold)}.");
+            else
+                Warn("[STANDBY] Ignored — standby mode needs Supabase to see what the " +
+                     "primary collector already stored.");
+        }
+
         // ── Setup services ────────────────────────────────────────────────────
         using var http    = HttpClientFactory.Create(httpHandler);
         var steam         = new SteamApiClient(http, steamKey);
@@ -124,25 +142,39 @@ public static class CollectCommand
             Info($"\n[GAME] AppID {appId}");
             try
             {
-                var snap = await builder.BuildAsync(appId, ct);
-
-                // ── Delta check ───────────────────────────────────────────────
+                // ── Previous state ────────────────────────────────────────────
                 // Supabase is the source of truth when configured, so a snapshot
                 // missing from the cloud is always uploaded. Without it we fall
                 // back to the local database so an offline container still skips
-                // unchanged rows.
+                // unchanged rows. Fetched before building the snapshot so a
+                // standby collector can bail out without calling Steam at all.
                 DeltaKey? last;
                 if (supabase is not null)
                 {
                     System.Text.Json.Nodes.JsonObject? lastRemote = null;
                     try { lastRemote = await supabase.GetLatestSnapshotAsync(appId, ct); }
                     catch (Exception ex) { Warn($"  [DELTA] Could not fetch last remote snapshot: {ex.Message}"); }
+
+                    // ── Standby gate ──────────────────────────────────────────
+                    // A secondary collector should only fill gaps the primary
+                    // left. An unknown age means we cannot tell, so we collect.
+                    if (standbyThreshold > TimeSpan.Zero &&
+                        DeltaService.AgeOf(lastRemote, DateTimeOffset.UtcNow) is { } age &&
+                        age < standbyThreshold)
+                    {
+                        Info($"  [STANDBY] Primary collected {Describe(age)} ago — standing by.");
+                        skipped++;
+                        continue;
+                    }
+
                     last = DeltaService.FromSupabaseRow(lastRemote);
                 }
                 else
                 {
                     last = db.GetLastDeltaKey(appId);
                 }
+
+                var snap = await builder.BuildAsync(appId, ct);
 
                 if (!DeltaService.HasChanged(snap, last))
                 {
@@ -184,6 +216,12 @@ public static class CollectCommand
         Info($"[DONE] saved={saved}  skipped={skipped}  errors={errors}");
         return errors > 0 ? 1 : 0;
     }
+
+    /// <summary>Compact human-readable duration for log lines: "42m", "3h 5m".</summary>
+    private static string Describe(TimeSpan span) =>
+        span.TotalHours >= 1
+            ? $"{(int)span.TotalHours}h {span.Minutes}m"
+            : $"{(int)span.TotalMinutes}m";
 
     private static string? ResolveEnv(string? cliValue, string envVar)
     {

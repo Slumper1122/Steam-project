@@ -74,10 +74,17 @@ var intervalOption  = new Option<int>(
     () => int.TryParse(Environment.GetEnvironmentVariable("COLLECT_INTERVAL_SECONDS"), out var i) ? i : 0,
     "Repeat every N seconds instead of exiting after one pass. " +
     "0 = run once. Falls back to COLLECT_INTERVAL_SECONDS env var.");
+var standbyOption   = new Option<int>(
+    "--standby-after",
+    () => int.TryParse(Environment.GetEnvironmentVariable("COLLECT_STANDBY_MINUTES"), out var m) ? m : 0,
+    "Run as a backup collector: only collect a game when its newest cloud snapshot " +
+    "is older than N minutes. 0 = always collect. Requires Supabase. " +
+    "Falls back to COLLECT_STANDBY_MINUTES env var.");
 collectCmd.AddOption(watchlistOption);
 collectCmd.AddOption(sbUrlOption);
 collectCmd.AddOption(sbKeyOption);
 collectCmd.AddOption(intervalOption);
+collectCmd.AddOption(standbyOption);
 collectCmd.SetHandler(async (context) =>
 {
     var watchlist  = context.ParseResult.GetValueForOption(watchlistOption)!;
@@ -87,8 +94,9 @@ collectCmd.SetHandler(async (context) =>
     var output     = context.ParseResult.GetValueForOption(outputOption)!;
     var db         = context.ParseResult.GetValueForOption(dbOption)!;
     var interval   = context.ParseResult.GetValueForOption(intervalOption);
-    context.ExitCode = await CollectCommand.RunAsync(watchlist, key, sbUrl, sbKey, output, db, interval,
-        context.GetCancellationToken());
+    var standby    = context.ParseResult.GetValueForOption(standbyOption);
+    context.ExitCode = await CollectCommand.RunAsync(watchlist, key, sbUrl, sbKey, output, db,
+        interval, standby, context.GetCancellationToken());
 });
 
 root.AddCommand(pullCmd);

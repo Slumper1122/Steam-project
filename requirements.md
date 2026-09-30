@@ -42,6 +42,9 @@ When `SUPABASE_URL` and `SUPABASE_KEY` are set, each stored snapshot is also wri
 ### FR-9 — Self-scheduling
 `collect --interval <seconds>` (or `COLLECT_INTERVAL_SECONDS`) repeats the collection indefinitely instead of exiting, so a container needs no cron daemon. `SIGTERM` and `Ctrl+C` shut it down cleanly.
 
+### FR-10 — Standby collection
+`collect --standby-after <minutes>` (or `COLLECT_STANDBY_MINUTES`) makes an instance act as a backup: for each game it reads the newest cloud snapshot first and skips the game entirely — without calling Steam — when that snapshot is younger than the threshold. The check is a no-op without Supabase, since there is no primary collector to observe.
+
 ---
 
 ## Non-Functional Requirements
@@ -73,7 +76,13 @@ The container runs as a non-root user (UID 1654) with a read-only root filesyste
 ### NFR-9 — Restricted image distribution
 Images are published to a private GitHub Container Registry package. Pulling requires a fine-grained personal access token limited to `read:packages`. Every build is scanned with Trivy and publication fails on a fixable HIGH or CRITICAL vulnerability.
 
-### NFR-10 — Resilience to transient API failures
+### NFR-10 — Self-hosted backup collector
+A second collector runs on a self-hosted Linux machine so data continues to arrive when the hosted runner is unavailable. It operates in standby mode: before fetching anything it reads the newest cloud snapshot for a game and does nothing if that snapshot is younger than a configurable threshold (`--standby-after` / `COLLECT_STANDBY_MINUTES`, 90 minutes in production). An unreadable or absent timestamp counts as "not covered", so the collector never stands by on an assumption it cannot verify.
+
+### NFR-11 — Self-hosted machine access control
+The machine exposes no inbound port to the internet. Administrative access is over a private overlay network (Tailscale) only: `sshd` binds to the overlay address and the host firewall denies all incoming traffic on every other interface. Authentication is by key only, direct root login is disabled, and a single named account is permitted. Deployment is pull-based — the machine fetches published images with a read-only registry token, and no external system holds a credential that grants access to it. Runtime secrets are readable by root only.
+
+### NFR-12 — Resilience to transient API failures
 Rate-limited and server-error responses (`408`, `429`, `5xx`), connection errors and request timeouts are retried up to four times with exponential backoff and jitter, honouring `Retry-After`. A run must not fail because of a single throttled response. Non-idempotent requests are replayed only when the server definitively rejected them (`429`), so retries can never duplicate a stored snapshot.
 
 ---

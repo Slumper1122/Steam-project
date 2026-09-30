@@ -69,7 +69,7 @@ public sealed class SupabaseClient(HttpClient http, string supabaseUrl, string a
                   $"?app_id=eq.{appId}" +
                   $"&order=captured_at.desc" +
                   $"&limit=1" +
-                  $"&select=current_players,total_reviews,owners_low,price_usd,discount_pct";
+                  $"&select=captured_at,current_players,total_reviews,owners_low,price_usd,discount_pct";
 
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
         AddHeaders(req);

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json.Nodes;
 using SteamPuller.Models;
 
@@ -53,5 +54,30 @@ public static class DeltaService
             OwnersLow:      row["owners_low"]?.GetValue<int>()         ?? 0,
             PriceUsd:       row["price_usd"]?.GetValue<double>()       ?? 0,
             DiscountPct:    row["discount_pct"]?.GetValue<int>()       ?? 0);
+    }
+
+    /// <summary>
+    /// How long ago a Supabase row was captured, or null when the row is missing
+    /// or carries no parsable timestamp. A standby collector uses this to tell
+    /// whether the primary already covered the current window; returning null
+    /// means "cannot tell", which callers treat as a reason to collect.
+    /// </summary>
+    public static TimeSpan? AgeOf(JsonObject? row, DateTimeOffset now)
+    {
+        if (row?["captured_at"] is not JsonValue value ||
+            !value.TryGetValue<string>(out var raw)     ||
+            string.IsNullOrWhiteSpace(raw))
+            return null;
+
+        if (!DateTimeOffset.TryParse(
+                raw,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal,
+                out var capturedAt))
+            return null;
+
+        // A clock running behind the database would otherwise report a negative age.
+        var age = now - capturedAt;
+        return age < TimeSpan.Zero ? TimeSpan.Zero : age;
     }
 }
