@@ -9,7 +9,6 @@
 
 set -euo pipefail
 
-APP_USER="${APP_USER:-steam}"
 APP_DIR="${APP_DIR:-/opt/steamdata}"
 CONF_DIR="${CONF_DIR:-/etc/steamdata}"
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -71,8 +70,17 @@ systemctl enable --now steamdata-update.timer
 
 # ── Readiness check ───────────────────────────────────────────────────────────
 READY=1
-grep -q '^STEAM_API_KEY=.\+' "$APP_DIR/.env"        || { warn "STEAM_API_KEY is empty in $APP_DIR/.env"; READY=0; }
-grep -q '^github_pat_' "$CONF_DIR/ghcr.token"       || { warn "$CONF_DIR/ghcr.token still holds the placeholder"; READY=0; }
+grep -q '^STEAM_API_KEY=.\+' "$APP_DIR/.env" \
+    || { warn "STEAM_API_KEY is empty in $APP_DIR/.env"; READY=0; }
+
+# A real fine-grained PAT also begins with github_pat_, so the placeholder has
+# to be recognised by its own wording rather than by that prefix.
+TOKEN_USER="$(sed -n '1p' "$CONF_DIR/ghcr.token")"
+TOKEN_VALUE="$(sed -n '2p' "$CONF_DIR/ghcr.token")"
+[[ -n "$TOKEN_USER" && "$TOKEN_USER" != "your-github-username" ]] \
+    || { warn "$CONF_DIR/ghcr.token line 1 still holds the placeholder username"; READY=0; }
+[[ -n "$TOKEN_VALUE" && "$TOKEN_VALUE" != *replace_me* ]] \
+    || { warn "$CONF_DIR/ghcr.token line 2 still holds the placeholder token"; READY=0; }
 
 if [[ $READY -eq 1 ]]; then
     log "Configuration looks complete — starting the collector"

@@ -2,28 +2,55 @@
 #
 # Locks SSH down to key-only logins from the Tailscale network.
 #
-# Run this ONLY after `ssh <user>@<host>` works with a key, and keep your current
+# Run this ONLY after `ssh <you>@<host>` works with a key, and keep your current
 # session open while you verify a second one. A mistake here locks you out of a
 # machine that has no monitor attached.
 #
-# Usage (as root, on the box):
+# Usage (from your own sudo-capable account, on the box):
 #   sudo bash harden-ssh.sh
+#
+# The account that invoked sudo is the one that keeps access. Override with
+# ADMIN_USER=<name> if you mean a different one.
 
 set -euo pipefail
 
-APP_USER="${APP_USER:-steam}"
+# The single account that keeps SSH access. It must be a human administrator:
+# after this script runs, root login is refused and everything else is done
+# through sudo, so an account that cannot sudo would leave a reachable box that
+# nobody can actually administer.
+ADMIN_USER="${ADMIN_USER:-${SUDO_USER:-}}"
 CONF="/etc/ssh/sshd_config.d/10-hardening.conf"
 
 log()  { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 die()  { printf '\033[1;31m!!! %s\033[0m\n' "$*" >&2; exit 1; }
 
 [[ $EUID -eq 0 ]] || die "Run with sudo."
-id "$APP_USER" >/dev/null 2>&1 || die "User '$APP_USER' does not exist. Run setup-host.sh first."
 
 # ── Refuse to lock the door with the key still inside ─────────────────────────
-KEYS="/home/$APP_USER/.ssh/authorized_keys"
-[[ -s "$KEYS" ]] || die "$KEYS is empty. Run 'ssh-copy-id $APP_USER@<host>' first, or you will be locked out."
-log "Found $(grep -c . "$KEYS") authorised key(s) for '$APP_USER'"
+# Every check below exists because getting it wrong means a machine with no
+# monitor that nothing can reach.
+[[ -n "$ADMIN_USER" ]] || die "Cannot tell which account should keep SSH access.
+    Run this as 'sudo bash harden-ssh.sh' from your own account, or pass it
+    explicitly: 'sudo ADMIN_USER=<name> bash harden-ssh.sh'."
+
+[[ "$ADMIN_USER" != "root" ]] || die "root cannot be the SSH login — this script
+    disables direct root login. Run it from your own sudo-capable account."
+
+id "$ADMIN_USER" >/dev/null 2>&1 || die "User '$ADMIN_USER' does not exist."
+
+id -nG "$ADMIN_USER" | grep -qw sudo \
+    || die "'$ADMIN_USER' is not in the sudo group. Hardening would leave a box
+    that accepts logins but cannot be administered. Fix with:
+      sudo usermod -aG sudo $ADMIN_USER"
+
+ADMIN_HOME="$(getent passwd "$ADMIN_USER" | cut -d: -f6)"
+[[ -n "$ADMIN_HOME" && -d "$ADMIN_HOME" ]] || die "No home directory for '$ADMIN_USER'."
+
+KEYS="$ADMIN_HOME/.ssh/authorized_keys"
+[[ -s "$KEYS" ]] || die "$KEYS is empty or missing. Passwords are refused after
+    this script runs, so you would be locked out. From your laptop, run:
+      ssh-copy-id $ADMIN_USER@<host>"
+log "Found $(grep -c . "$KEYS") authorised key(s) for '$ADMIN_USER'"
 
 TS_IP="$(tailscale ip -4 2>/dev/null | head -n1 || true)"
 [[ -n "$TS_IP" ]] || die "Tailscale has no IPv4 address yet. Run 'tailscale up' first."
@@ -52,7 +79,7 @@ PubkeyAuthentication yes
 PermitRootLogin no
 
 # Nobody else gets a shell on this box.
-AllowUsers $APP_USER
+AllowUsers $ADMIN_USER
 
 # Drop unauthenticated connections quickly so a stuck client cannot pile up.
 MaxAuthTries 3
@@ -102,14 +129,14 @@ cat <<EOF
 SSH is now locked down
 ----------------------
   listening on   $TS_IP (Tailscale only)
-  login          key-only, user '$APP_USER'
+  login          key-only, user '$ADMIN_USER'
   root login     disabled
 
 DO NOT CLOSE THIS SESSION YET.
 
 From your laptop, open a second terminal and confirm:
 
-    ssh $APP_USER@$TS_IP
+    ssh $ADMIN_USER@$TS_IP
 
 If that works, you are done. If it does not, fix it from this still-open
 session — the box has no monitor.

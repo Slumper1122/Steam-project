@@ -13,7 +13,6 @@
 
 set -euo pipefail
 
-APP_USER="${APP_USER:-steam}"
 APP_DIR="${APP_DIR:-/opt/steamdata}"
 
 log()  { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
@@ -74,20 +73,16 @@ cat > /etc/docker/daemon.json <<'EOF'
 EOF
 systemctl restart docker
 
-# ── Application user ──────────────────────────────────────────────────────────
-# The collector runs as UID 1654 inside the container; this account exists only
-# to own the deployment files and to be the SSH login. It is deliberately not in
-# the docker group: membership there is equivalent to root, so administration
-# goes through sudo where it is logged.
-if id "$APP_USER" >/dev/null 2>&1; then
-    log "User '$APP_USER' already exists"
-else
-    log "Creating user '$APP_USER'"
-    adduser --disabled-password --gecos "" "$APP_USER"
-fi
-
-install -d -o "$APP_USER" -g "$APP_USER" -m 0755 "$APP_DIR"
-install -d -o "$APP_USER" -g "$APP_USER" -m 0700 "/home/$APP_USER/.ssh"
+# ── Deployment directory ──────────────────────────────────────────────────────
+# No service account is created. The container runs as UID 1654 in its own
+# namespace and its data lives in a named Docker volume, so that UID needs no
+# host account. Everything here is root-owned: only root runs compose, and only
+# root may read the Steam and Supabase keys.
+#
+# Nobody is added to the docker group either — that membership is equivalent to
+# root and would bypass the sudo logging that makes actions attributable.
+log "Creating $APP_DIR"
+install -d -o root -g root -m 0755 "$APP_DIR"
 
 # ── Tailscale ─────────────────────────────────────────────────────────────────
 if command -v tailscale >/dev/null 2>&1; then
@@ -127,6 +122,11 @@ ufw --force enable
 log "Base setup complete"
 [[ $TEMP_RULE -eq 1 ]] && warn "Remember: SSH is still reachable from $CLIENT_IP until you harden."
 
+# SSH access after hardening belongs to a human account that can sudo — the one
+# created during the Ubuntu install. Naming it here keeps the instructions
+# correct on a box where that account is not called 'ubuntu'.
+ADMIN_USER="${SUDO_USER:-$(id -un)}"
+
 cat <<EOF
 
 Next steps
@@ -135,15 +135,17 @@ Next steps
 
      sudo tailscale up --ssh=false --hostname=garage-collector
 
-2. Note the address it reports, then from your laptop:
+2. Note the address it reports, then from your own laptop copy your public key
+   to the administrator account on this box:
 
-     ssh $APP_USER@garage-collector
+     ssh-copy-id $ADMIN_USER@garage-collector
+     ssh $ADMIN_USER@garage-collector          # must work without a password
 
-   Once that works, copy your public key in:
+3. Deploy the collector:
 
-     ssh-copy-id $APP_USER@garage-collector
+     sudo bash deploy/install.sh
 
-3. Only after key login works, lock SSH down:
+4. Only after key login works, lock SSH down:
 
      sudo bash $APP_DIR/harden-ssh.sh
 

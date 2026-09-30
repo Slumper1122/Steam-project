@@ -558,17 +558,27 @@ Even with the firewall flushed it would not answer on the LAN. On top of that,
 independent layers, because one misconfiguration should not be enough.
 
 **Keys only, no root.** Passwords are refused outright, so there is nothing to
-brute-force and `fail2ban` is unnecessary. `PermitRootLogin no` and
-`AllowUsers steam` mean administration goes through `sudo`, which attributes each
-action to a person.
+brute-force and `fail2ban` is unnecessary. `PermitRootLogin no` and an
+`AllowUsers` list naming exactly one account mean administration goes through
+`sudo`, which attributes each action to a person.
+
+**One human account, and it must be able to act.** `harden-ssh.sh` grants SSH to
+the account that invoked it — your own, created during the Ubuntu install — and
+refuses to run unless that account is in the `sudo` group and already has a
+working key. A reachable box that nobody can administer is its own kind of
+lockout, and on a machine with no monitor there is no way back.
+
+**No service account.** The container runs as UID 1654 inside its own namespace
+and keeps its data in a named Docker volume, so that UID needs no host account.
+Nothing under `/opt/steamdata` is owned by a login user.
 
 **Pull, never push.** GitHub holds no credential for this machine and never
 connects to it. The box pulls from GHCR with a **read-only** (`read:packages`)
 token, so even full compromise of the laptop cannot overwrite a published image.
 
 **Secrets are root-only.** `/opt/steamdata/.env` and `/etc/steamdata/ghcr.token`
-are `0600 root:root`. The `steam` account is deliberately **not** in the `docker`
-group — that membership is equivalent to root and would bypass `sudo` logging.
+are `0600 root:root`. Nobody is added to the `docker` group — that membership is
+equivalent to root and would bypass `sudo` logging.
 
 **The container is hardened as before:** UID 1654, read-only root filesystem,
 all capabilities dropped, `no-new-privileges`, capped at 256 MB and half a core
@@ -579,8 +589,9 @@ so it cannot starve a 4 GB machine.
 Four scripts in `deploy/`, run on the box in this order.
 
 **1. Install Ubuntu Server LTS** on the laptop. Enable OpenSSH during setup, and
-in the BIOS set it to power on after a power cut, so it recovers on its own.
-Closing the lid should not suspend it:
+create your administrator account — that account, not a service user, is the one
+that keeps SSH access at the end. In the BIOS set the machine to power on after a
+power cut, so it recovers on its own. Closing the lid should not suspend it:
 
 ```bash
 sudo sed -i 's/^#HandleLidSwitch=.*/HandleLidSwitch=ignore/' /etc/systemd/logind.conf
@@ -609,16 +620,20 @@ sudo nano /etc/steamdata/ghcr.token    # line 1: GitHub username, line 2: read:p
 sudo /opt/steamdata/update.sh
 ```
 
-**4. Lock SSH down** — only once key login works:
+**4. Lock SSH down** — only once key login works. Replace `you` with your
+administrator account name:
 
 ```bash
-ssh-copy-id steam@garage-collector     # from your laptop
-sudo bash /opt/steamdata/harden-ssh.sh
+ssh-copy-id you@garage-collector       # from your laptop
+ssh you@garage-collector               # must succeed without a password first
+sudo bash /opt/steamdata/harden-ssh.sh # then, on the box, from that account
 ```
 
-The script refuses to run if `authorized_keys` is empty, and prints a warning to
-keep the current session open until a second one is verified. The box has no
-monitor; a mistake here means carrying a keyboard to the garage.
+The script grants access to whichever account ran `sudo`, and refuses to proceed
+unless that account is in the `sudo` group and already has a key in
+`authorized_keys`. It then tells you to keep the current session open until a
+second one is verified. The box has no monitor; a mistake here means carrying a
+keyboard to the garage.
 
 ### Staying current
 
