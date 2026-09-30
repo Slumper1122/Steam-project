@@ -22,13 +22,30 @@ die()  { printf '\033[1;31m!!! %s\033[0m\n' "$*" >&2; exit 1; }
 [[ $EUID -eq 0 ]] || die "Run with sudo."
 [[ -r /etc/os-release ]] || die "Cannot identify the OS."
 . /etc/os-release
-[[ "$ID" == "ubuntu" || "$ID" == "debian" ]] || die "Expected Ubuntu or Debian, found '$ID'."
+
+# Docker publishes repositories for Ubuntu and Debian only. Derivatives such as
+# Linux Mint report their own ID and their own codename, neither of which names
+# anything on download.docker.com, so map them onto the base they are built from.
+case "$ID" in
+    ubuntu|debian) DOCKER_DISTRO="$ID";    DERIVED_SUITE="$VERSION_CODENAME"        ;;
+    linuxmint)     DOCKER_DISTRO="ubuntu"; DERIVED_SUITE="${UBUNTU_CODENAME:-}"     ;;
+    lmde)          DOCKER_DISTRO="debian"; DERIVED_SUITE="${DEBIAN_CODENAME:-}"     ;;
+    *)             die "Expected Ubuntu, Debian or Linux Mint, found '$ID'."        ;;
+esac
+
+DOCKER_SUITE="${DOCKER_SUITE:-$DERIVED_SUITE}"
+[[ -n "$DOCKER_SUITE" ]] || die "Cannot tell which $DOCKER_DISTRO release
+    '$PRETTY_NAME' is based on. Name it explicitly, for example:
+      sudo DOCKER_SUITE=noble bash setup-host.sh"
+
+log "Detected $PRETTY_NAME — using the $DOCKER_DISTRO '$DOCKER_SUITE' Docker repository"
 
 # ── Base packages ─────────────────────────────────────────────────────────────
 log "Updating package lists"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq ca-certificates curl gnupg ufw unattended-upgrades
+apt-get install -y -qq \
+    ca-certificates curl gnupg ufw unattended-upgrades openssh-server
 
 # ── Unattended security updates ───────────────────────────────────────────────
 # A box in a garage will not get logged into for months, so security patches
@@ -39,19 +56,45 @@ APT::Periodic::Update-Package-Lists "1";
 APT::Periodic::Unattended-Upgrade "1";
 EOF
 
+# ── Never fall asleep ─────────────────────────────────────────────────────────
+# A laptop in a garage sits with its lid shut, and a desktop edition suspends on
+# idle out of the box. Either one stops the collector without any error to find
+# later. Masking the sleep targets is what makes this stick: it holds even if
+# someone re-enables suspend in the desktop's power settings.
+log "Disabling suspend, hibernate and lid-close sleep"
+install -d -m 0755 /etc/systemd/logind.conf.d
+cat > /etc/systemd/logind.conf.d/10-collector.conf <<'EOF'
+# Managed by setup-host.sh — this machine must stay awake to collect.
+[Login]
+HandleLidSwitch=ignore
+HandleLidSwitchDocked=ignore
+HandleLidSwitchExternalPower=ignore
+HandleSuspendKey=ignore
+HandleHibernateKey=ignore
+IdleAction=ignore
+EOF
+
+systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target \
+    >/dev/null 2>&1 || warn "Could not mask the sleep targets; check 'systemctl status sleep.target'."
+
+# Applying this without a reboot needs logind reloaded. On a desktop edition
+# that can end the graphical session, which is harmless here — the collector
+# does not need one — but it is why this runs before anything is deployed.
+systemctl restart systemd-logind || warn "systemd-logind did not restart; a reboot will apply the setting."
+
 # ── Docker ────────────────────────────────────────────────────────────────────
 if command -v docker >/dev/null 2>&1; then
     log "Docker already installed ($(docker --version))"
 else
     log "Installing Docker Engine from the official repository"
     install -m 0755 -d /etc/apt/keyrings
-    curl -fsSL "https://download.docker.com/linux/$ID/gpg" \
+    curl -fsSL "https://download.docker.com/linux/$DOCKER_DISTRO/gpg" \
         -o /etc/apt/keyrings/docker.asc
     chmod a+r /etc/apt/keyrings/docker.asc
 
     cat > /etc/apt/sources.list.d/docker.list <<EOF
 deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
-https://download.docker.com/linux/$ID $VERSION_CODENAME stable
+https://download.docker.com/linux/$DOCKER_DISTRO $DOCKER_SUITE stable
 EOF
 
     apt-get update -qq

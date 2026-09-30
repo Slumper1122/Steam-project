@@ -588,15 +588,21 @@ so it cannot starve a 4 GB machine.
 
 Four scripts in `deploy/`, run on the box in this order.
 
-**1. Install Ubuntu Server LTS** on the laptop. Enable OpenSSH during setup, and
-create your administrator account — that account, not a service user, is the one
-that keeps SSH access at the end. In the BIOS set the machine to power on after a
-power cut, so it recovers on its own. Closing the lid should not suspend it:
+**1. Start from the Linux the machine already runs.** No reinstall is needed.
+Ubuntu, Debian and Linux Mint are all supported, desktop editions included —
+`setup-host.sh` maps a derivative onto the base distribution Docker publishes
+packages for, since `download.docker.com` has no `linuxmint` repository and
+Mint's own codename names nothing there.
 
-```bash
-sudo sed -i 's/^#HandleLidSwitch=.*/HandleLidSwitch=ignore/' /etc/systemd/logind.conf
-sudo systemctl restart systemd-logind
-```
+Two prerequisites: an account that can `sudo` (that account, not a service user,
+is the one that keeps SSH access at the end), and SSH reachable for the first
+connection. The script installs `openssh-server` if it is missing, but something
+has to let you in to run it.
+
+In the BIOS, set the machine to power on after a power cut so it recovers
+unattended. The script handles sleep itself — it masks the suspend targets and
+tells `logind` to ignore the lid — because a suspended laptop stops collecting
+without leaving an error behind to find.
 
 **2. Bootstrap** — installs Docker, Tailscale, automatic security updates and the
 firewall:
