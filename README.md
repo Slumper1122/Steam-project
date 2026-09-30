@@ -211,6 +211,7 @@ Steam-project/
 │   │       └── CollectCommand.cs          ← watchlist batch, interval, standby
 │   └── Steam.Tests/                       ← xUnit, 133 tests
 ├── deploy/                                ← the self-hosted garage box
+│   ├── bootstrap-remote.sh                ← one command for a helper: make it reachable
 │   ├── setup-host.sh                      ← Docker, Tailscale, firewall, updates
 │   ├── harden-ssh.sh                      ← key-only SSH bound to Tailscale
 │   ├── install.sh                         ← lays down the app and the timer
@@ -597,12 +598,52 @@ Mint's own codename names nothing there.
 Two prerequisites: an account that can `sudo` (that account, not a service user,
 is the one that keeps SSH access at the end), and SSH reachable for the first
 connection. The script installs `openssh-server` if it is missing, but something
-has to let you in to run it.
+has to let you in to run it — see below if nothing does yet.
 
 In the BIOS, set the machine to power on after a power cut so it recovers
 unattended. The script handles sleep itself — it masks the suspend targets and
 tells `logind` to ignore the lid — because a suspended laptop stops collecting
 without leaving an error behind to find.
+
+<details>
+<summary><b>If you cannot reach the machine at all yet</b> — one command for a helper at the keyboard</summary>
+
+Tailscale is what makes the box reachable from anywhere without opening a port,
+but it cannot install itself: that first connection has to come from somewhere
+else. If the machine belongs to someone who can sit at it, `bootstrap-remote.sh`
+is the single command they run. It installs an SSH server and Tailscale, creates
+your administrator account with your public key, and stops there — no firewall
+changes, no deployment, and none of the project's secrets. Everything after it
+is yours to do over SSH.
+
+First, create a Tailscale auth key at
+[login.tailscale.com/admin/settings/keys](https://login.tailscale.com/admin/settings/keys):
+**Reusable off**, **Pre-approved on**, expiry as short as you can work with. The
+key is spent the instant the script runs, so a copy left in someone's chat log
+is worthless afterwards.
+
+Then send them one line, with your **public** key (`id_ed25519.pub` — the
+`.pub` file, never the other one):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Slumper1122/Steam-project/main/deploy/bootstrap-remote.sh -o /tmp/bootstrap.sh && sudo bash /tmp/bootstrap.sh --admin you --ssh-key "ssh-ed25519 AAAA... you@laptop" --ts-key tskey-auth-...
+```
+
+It prints one short line — the hostname and Tailscale address — for them to read
+back. That is all you need from them.
+
+The account it creates has no password, so `sudo` is granted without one. That
+is deliberate rather than lax: access is key-only over a private network, the
+helper never learns a credential, and your access does not depend on theirs. It
+is the same arrangement cloud images ship with, for the same reason. To require
+a password later:
+
+```bash
+sudo passwd you && sudo rm /etc/sudoers.d/90-you
+```
+
+Revoke the auth key in the Tailscale console once the machine appears there.
+</details>
 
 **2. Bootstrap** — installs Docker, Tailscale, automatic security updates and the
 firewall:
