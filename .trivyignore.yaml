@@ -1,0 +1,18 @@
+# Time-boxed, accepted vulnerabilities.
+#
+# Entries here suppress the CI publish gate only. The SARIF upload is scanned
+# WITHOUT this file, so every finding still shows up in the repository's
+# Security tab — accepted does not mean hidden.
+#
+# Every entry must carry an expired_at. Once it passes, the gate blocks
+# publishing again, so an exception cannot be forgotten.
+
+vulnerabilities:
+  - id: CVE-2026-84782
+    statement: >
+      openssl / libssl3t64 in mcr.microsoft.com/dotnet/runtime:8.0-noble-chiseled.
+      Fixed upstream in 3.0.13-0ubuntu3.16, but the base image still ships
+      3.0.13-0ubuntu3.15 and was last rebuilt on 2026-09-04. A chiseled image has
+      no package manager, so this cannot be patched here — it needs Microsoft to
+      republish the base. Reassess after their next rebuild (expected mid-October).
+    expired_at: 2026-10-31

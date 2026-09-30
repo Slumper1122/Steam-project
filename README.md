@@ -434,6 +434,42 @@ build and fails on any fixable HIGH or CRITICAL CVE, so a vulnerable image never
 reaches the registry. Results are uploaded to the repository Security tab. The
 same workflow asserts the image is not configured to run as root.
 
+Occasionally a CVE is fixable upstream but not by us — a chiseled base image has
+no package manager, so the only cure is Microsoft republishing it. Those are
+listed in `.trivyignore.yaml`, which is subject to two rules the workflow
+enforces rather than merely documents:
+
+- **Every entry needs an `expired_at` date.** The *Audit accepted
+  vulnerabilities* step fails the build if one is missing, so an exception
+  cannot quietly become permanent. Once the date passes, Trivy stops
+  suppressing the finding and the gate blocks publishing again.
+- **The Security tab is never filtered.** Only the publish gate reads the
+  ignore file; the SARIF upload is scanned without it. Accepted does not mean
+  hidden.
+
+Each run prints the active exceptions, their expiry and the days remaining to
+the job summary as warning annotations.
+
+| Currently accepted | Expires | Why |
+|---|---|---|
+| `CVE-2026-84782` (openssl, libssl3t64) | 2026-10-31 | Fixed in `3.0.13-0ubuntu3.16`, but `runtime:8.0-noble-chiseled` still ships `3.0.13-0ubuntu3.15` and was last rebuilt on 2026-09-04. Not patchable in a chiseled image. |
+
+To check whether the base image has been rebuilt since, read its creation date
+straight from the registry — no Docker or login needed:
+
+```bash
+DIGEST=$(curl -sH 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' \
+  https://mcr.microsoft.com/v2/dotnet/runtime/manifests/8.0-noble-chiseled \
+  | jq -r '.manifests[] | select(.platform.architecture=="amd64") | .digest')
+CONFIG=$(curl -sH 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
+  https://mcr.microsoft.com/v2/dotnet/runtime/manifests/"$DIGEST" | jq -r .config.digest)
+curl -s https://mcr.microsoft.com/v2/dotnet/runtime/blobs/"$CONFIG" | jq -r .created
+```
+
+If that date is newer than the entry above, delete the entry and push — the
+build step uses `pull: true`, so it always re-resolves the base rather than
+scanning a cached layer.
+
 ---
 
 ### Scheduling options compared

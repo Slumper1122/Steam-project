@@ -60,6 +60,9 @@ jobs:
           context: .
           load: true
           tags: steamdata:ci
+          # Always re-resolve the base image. A cached FROM layer would let the
+          # scan pass against a base that upstream has since patched.
+          pull: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -71,8 +74,11 @@ jobs:
 
       # Scanning and gating are separate steps so the findings are always
       # reported, even though a fixable CVE blocks publication.
+      # Feeds the publish gate, so accepted risks in .trivyignore.yaml apply here.
       - name: Scan image (Trivy)
         uses: aquasecurity/trivy-action@v0.36.0
+        env:
+          TRIVY_IGNOREFILE: .trivyignore.yaml
         with:
           image-ref: steamdata:ci
           format: json
@@ -81,6 +87,8 @@ jobs:
           ignore-unfixed: true
           exit-code: "0"
 
+      # Deliberately scanned WITHOUT the ignore file: an accepted risk should
+      # still be visible in the Security tab, just not block the release.
       - name: Convert scan to SARIF
         uses: aquasecurity/trivy-action@v0.36.0
         if: always()
@@ -112,6 +120,60 @@ jobs:
 
       - name: Smoke test (--help must work)
         run: docker run --rm steamdata:ci --help
+
+      # A suppressed finding must never be a silent one, and must never be
+      # permanent. This reports what the gate below is ignoring and refuses
+      # any entry that would outlive its review.
+      - name: Audit accepted vulnerabilities
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import datetime, os, pathlib, sys
+          try:
+              import yaml
+          except ImportError:
+              sys.exit('::error::PyYAML is unavailable, so the accepted-risk list '
+                       'cannot be audited; refusing to publish unaudited')
+
+          path = pathlib.Path('.trivyignore.yaml')
+          if not path.exists():
+              print('No accepted vulnerabilities.')
+              sys.exit(0)
+
+          entries = (yaml.safe_load(path.read_text()) or {}).get('vulnerabilities') or []
+          today = datetime.date.today()
+
+          # PyYAML resolves a bare yyyy-mm-dd to a date, but a quoted one stays a
+          # string. Either spelling must be audited the same way.
+          def expiry(entry):
+              raw = entry.get('expired_at')
+              if isinstance(raw, datetime.datetime): return raw.date()
+              if isinstance(raw, datetime.date):     return raw
+              if isinstance(raw, str):
+                  try: return datetime.date.fromisoformat(raw.strip())
+                  except ValueError: return None
+              return None
+
+          dated   = [(e['id'], expiry(e), ' '.join((e.get('statement') or '—').split()))
+                     for e in entries]
+          undated = [cve for cve, exp, _ in dated if exp is None]
+
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write(f'## Accepted vulnerabilities — {len(dated)}\n\n'
+                            '| CVE | Expires | Days left | Reason |\n|---|---|---|---|\n')
+              for cve, exp, reason in dated:
+                  summary.write(f"| {cve} | {exp or '**missing**'} | "
+                                f"{(exp - today).days if exp else ''} | {reason} |\n")
+
+          for cve, exp, _ in dated:
+              if exp:
+                  print(f'::warning::{cve} is suppressed in the publish gate until '
+                        f'{exp} ({(exp - today).days} days left)')
+
+          if undated:
+              sys.exit('::error::Accepted vulnerabilities need a valid expired_at '
+                       'date (yyyy-mm-dd): ' + ', '.join(undated))
+          PY
 
       # Runs last so a CVE in the base image does not hide a broken container.
       - name: Enforce vulnerability policy

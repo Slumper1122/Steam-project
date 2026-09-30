@@ -25,6 +25,8 @@ steam_api_key.txt
 .git/
 .github/
 .gitignore
+.gitattributes
+.trivyignore.yaml
 .vs/
 .vscode/
 *.user

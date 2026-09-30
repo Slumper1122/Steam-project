@@ -74,7 +74,9 @@ The collector ships as a Linux container image built from a chiseled base; the m
 The container runs as a non-root user (UID 1654) with a read-only root filesystem, all Linux capabilities dropped and `no-new-privileges` set. Only the `/data` volume is writable. Application files are owned by root and mounted read-only so the process cannot modify its own binaries.
 
 ### NFR-9 — Restricted image distribution
-Images are published to a private GitHub Container Registry package. Pulling requires a fine-grained personal access token limited to `read:packages`. Every build is scanned with Trivy and publication fails on a fixable HIGH or CRITICAL vulnerability.
+Images are published to a private GitHub Container Registry package. Pulling requires a fine-grained personal access token limited to `read:packages`. Every build re-resolves its base image and is scanned with Trivy; publication fails on a fixable HIGH or CRITICAL vulnerability.
+
+A finding that is fixable upstream but not in a chiseled image — which has no package manager — may be accepted in `.trivyignore.yaml`, under two conditions the pipeline enforces. Each entry must carry an expiry date, or the build fails; when the date passes the finding blocks publication again. Suppression applies only to the publish gate, never to the results uploaded to the Security tab, so an accepted risk stays visible and its remaining lifetime is reported on every run.
 
 ### NFR-10 — Self-hosted backup collector
 A second collector runs on a self-hosted Linux machine so data continues to arrive when the hosted runner is unavailable. It operates in standby mode: before fetching anything it reads the newest cloud snapshot for a game and does nothing if that snapshot is younger than a configurable threshold (`--standby-after` / `COLLECT_STANDBY_MINUTES`, 90 minutes in production). An unreadable or absent timestamp counts as "not covered", so the collector never stands by on an assumption it cannot verify.
